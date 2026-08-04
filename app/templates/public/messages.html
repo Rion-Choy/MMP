@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <link rel="stylesheet" href="/static/style.css?v=20260803-public-refresh">
+  <link rel="stylesheet" href="/static/style.css?v=20260805-mail-features">
   <title>邮件正文</title>
 </head>
 <body>
@@ -23,6 +23,7 @@
           <div><p class="eyebrow">Mailbox archive</p><h1>匹配邮件</h1><p class="lead">以下内容为对应收件人或抄送地址匹配的邮件正文。</p></div>
           <span class="matched-mailbox"><span>匹配邮箱</span><strong>{{ target_email }}</strong></span>
           <div class="public-actions">
+            <label class="auto-refresh-control" id="auto-refresh-toggle" for="auto-refresh-interval"><span>自动刷新</span><select class="select" id="auto-refresh-interval" aria-label="自动刷新间隔"><option value="0">不刷新</option><option value="10">10 秒</option><option value="20">20 秒</option><option value="30">30 秒</option></select></label>
             <button class="btn btn-primary" id="refresh-messages" type="button" data-refresh-url="/m/{{ token }}/refresh?page={{ page }}" aria-controls="messages-content" aria-busy="false"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>
             <span class="status-pill">安全连接</span>
           </div>
@@ -35,6 +36,6 @@
       </div>
     </main>
   </div>
-  <script src="/static/public-messages.js?v=20260803-public-refresh" defer></script>
+  <script src="/static/public-messages.js?v=20260805-mail-features" defer></script>
 </body>
 </html>

@@ -2,9 +2,11 @@
   const button = document.querySelector("#refresh-messages");
   const content = document.querySelector("#messages-content");
   const captchaHost = document.querySelector("#refresh-captcha-host");
-  if (!button || !content || !captchaHost) return;
+  const interval = document.querySelector("#auto-refresh-interval");
+  if (!button || !content || !captchaHost || !interval) return;
 
   const refreshUrl = button.dataset.refreshUrl;
+  let timer = null;
 
   const setBusy = (busy) => {
     button.disabled = busy;
@@ -47,4 +49,18 @@
       setBusy(false);
     }
   });
+
+  const scheduleRefresh = () => {
+    if (timer !== null) window.clearTimeout(timer);
+    const seconds = Number.parseInt(interval.value, 10) || 0;
+    if (seconds <= 0) return;
+    timer = window.setTimeout(() => {
+      timer = null;
+      if (!button.disabled) button.click();
+      scheduleRefresh();
+    }, seconds * 1000);
+  };
+
+  interval.addEventListener("change", scheduleRefresh);
+  scheduleRefresh();
 })();

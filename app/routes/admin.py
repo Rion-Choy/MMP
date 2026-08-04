@@ -50,7 +50,14 @@ from app.services.settings_service import (
     set_sync_enabled,
     set_sync_interval,
 )
-from app.services.target_service import create_target, delete_target, disable_target, enable_target
+from app.services.target_service import (
+    create_target,
+    delete_target,
+    disable_target,
+    enable_target,
+    import_target_emails,
+    update_target_email,
+)
 from app.services.note_service import update_target_note
 from app.templates import templates
 
@@ -337,6 +344,52 @@ def add_target(request: Request, email_address: str = Form(...), csrf_token: str
             response = templates.TemplateResponse(request, "admin/targets.html", {"targets": targets, "error": "邮箱地址格式不正确", "csrf_token": csrf_token}, status_code=400)
             return set_csrf_cookie(request, no_store(response), csrf_token)
         return no_store(RedirectResponse("/admin/targets", status_code=303))
+    finally:
+        db.close()
+
+
+@router.post("/targets/import", dependencies=[Depends(require_admin)])
+def import_targets(
+    request: Request,
+    email_addresses: str = Form(""),
+    csrf_token: str = Form(...),
+) -> Response:
+    validate_csrf(request, csrf_token)
+    db = request.app.state.session_factory()
+    try:
+        result = import_target_emails(db, email_addresses.splitlines())
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    query = urlencode(result)
+    return no_store(RedirectResponse(f"/admin/targets?{query}", status_code=303))
+
+
+@router.post("/targets/{target_id}/email", dependencies=[Depends(require_admin)])
+def save_target_email(
+    request: Request,
+    target_id: int,
+    email_address: str = Form(""),
+    csrf_token: str = Form(...),
+) -> Response:
+    validate_csrf(request, csrf_token)
+    db = request.app.state.session_factory()
+    try:
+        target = update_target_email(db, target_id, email_address)
+        if target is None:
+            return no_store(JSONResponse({"status": "error", "error": "隐私邮箱不存在"}, status_code=404))
+        db.commit()
+        return no_store(JSONResponse({
+            "status": "ok",
+            "email_address": target.email_address,
+            "normalized_email": target.normalized_email,
+        }))
+    except ValueError as exc:
+        db.rollback()
+        return no_store(JSONResponse({"status": "error", "error": str(exc)}, status_code=400))
     finally:
         db.close()
 

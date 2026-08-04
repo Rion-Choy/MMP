@@ -7,7 +7,7 @@
   {% endif %}
   {% for message in messages %}
   <article class="glass-panel mail-card">
-    <div class="mail-card-label">Message body</div>
+    <div class="mail-card-meta"><span class="mail-card-label">Message body</span><span class="mail-meta-time">时间：{{ message.received_at|beijing_time }}</span></div>
     <pre class="mail-body">{{ message.body_text }}</pre>
   </article>
   {% endfor %}

@@ -106,6 +106,30 @@ def test_public_messages_template_declares_ajax_refresh_contract() -> None:
     assert "window.location.reload" not in script
     assert "读取中" in script
     assert "同步" not in script
+    assert 'id="auto-refresh-toggle"' in template
+    assert 'id="auto-refresh-interval"' in template
+    assert 'value="0"' in template
+    assert 'value="10"' in template
+    assert 'value="20"' in template
+    assert 'value="30"' in template
+    assert "setTimeout" in script
+    assert "button.click()" in script
+
+
+def test_public_mail_fragment_displays_received_time_in_beijing_time(client) -> None:
+    _seed_target(client)
+    db = client.app.state.session_factory()
+    message = db.query(MailMessage).filter_by(immutable_message_id="refresh-message-1").one()
+    message.received_at = datetime(2026, 8, 3, 12, 0, 0)
+    db.commit()
+    db.close()
+    _set_verified_session(client)
+
+    response = client.post(f"/m/{TOKEN}/refresh?page=1")
+
+    assert response.status_code == 200
+    assert "2026-08-03 20:00:00" in response.json()["html"]
+    assert "2026-08-03 12:00:00" not in response.json()["html"]
 
 
 def test_refresh_route_does_not_import_or_call_mailbox_sync_components() -> None:

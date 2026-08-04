@@ -183,6 +183,8 @@ h3 { margin: 0; font-size: .92rem; }
 .public-content { display: grid; gap: 16px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
 .public-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.auto-refresh-control { display: inline-flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: .74rem; font-weight: 700; }
+.auto-refresh-control .select { width: auto; min-height: 40px; padding-top: 7px; padding-bottom: 7px; }
 .refresh-icon { display: inline-block; font-size: 1rem; line-height: 1; }
 .btn.is-loading .refresh-icon { animation: refresh-spin .8s linear infinite; }
 @keyframes refresh-spin { to { transform: rotate(360deg); } }
@@ -239,6 +241,20 @@ h3 { margin: 0; font-size: .92rem; }
 .note-status { display: block; min-height: 1.1em; margin-top: 4px; color: var(--text-muted); font-size: .68rem; }
 .note-status[data-state="ok"] { color: #15803d; }
 .note-status[data-state="error"] { color: var(--danger); }
+.email-editor { min-width: 190px; }
+.email-status { display: block; min-height: 1.1em; margin-top: 4px; color: var(--text-muted); font-size: .68rem; }
+.email-status[data-state="ok"] { color: #15803d; }
+.email-status[data-state="error"] { color: var(--danger); }
+.import-panel { margin-bottom: 18px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: rgba(255,255,255,.38); }
+.app-dialog { width: min(100% - 32px, 460px); padding: 22px; border: 1px solid var(--glass-border); border-radius: var(--radius-lg); color: var(--text-primary); background: rgba(248,251,255,.96); box-shadow: var(--shadow-lg); }
+.app-dialog::backdrop { background: rgba(30,41,59,.28); backdrop-filter: blur(3px); }
+.app-dialog h2 { margin-bottom: 8px; }
+.app-dialog p { color: var(--text-secondary); font-size: .82rem; }
+.app-dialog .toolbar-actions { justify-content: flex-end; margin-top: 18px; }
+.email-comparison { display: grid; gap: 10px; margin-top: 14px; }
+.email-comparison > div { display: grid; gap: 3px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: rgba(255,255,255,.68); }
+.email-comparison span { color: var(--text-muted); font-size: .72rem; }
+.email-comparison strong { overflow-wrap: anywhere; font-size: .86rem; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; min-width: 700px; border-collapse: collapse; }
 th { padding: 11px 12px; color: var(--text-muted); font-size: .69rem; font-weight: 800; letter-spacing: .08em; text-align: left; text-transform: uppercase; }

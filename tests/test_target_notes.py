@@ -60,7 +60,7 @@ def test_target_page_renders_compact_note_input_with_five_char_limit(client: Tes
     assert 'name="note"' in page.text
     assert 'maxlength="5"' in page.text
     assert '<input class="input target-note"' in page.text
-    assert '<textarea' not in page.text
+    assert '<textarea name="note"' not in page.text
     assert f'data-note-url="/admin/targets/{target_id}/note"' in page.text
     assert "/admin/tags" not in page.text
     assert "Target tags" not in page.text
@@ -166,3 +166,136 @@ def test_note_frontend_saves_on_blur_without_full_reload() -> None:
     assert "window.location.reload" not in script
     assert "maxlength=\"5\"" in template
     assert "resize: none" in Path("app/static/style.css").read_text(encoding="utf-8")
+
+
+def test_target_management_page_declares_import_export_and_email_edit_contract(client: TestClient) -> None:
+    _login(client)
+    _seed_target(client)
+
+    page = client.get("/admin/targets")
+    template = Path("app/templates/admin/targets.html").read_text(encoding="utf-8")
+    script = Path("app/static/admin-targets.js").read_text(encoding="utf-8")
+
+    assert page.status_code == 200
+    assert 'id="show-import"' in page.text
+    assert 'id="import-panel"' in page.text
+    assert 'id="export-selected"' in page.text
+    assert 'class="target-select"' in page.text
+    assert 'class="input target-email"' in page.text
+    assert 'id="export-dialog"' in page.text
+    assert 'id="email-confirm-dialog"' in page.text
+    assert "/admin/targets/import" in template
+    assert "navigator.clipboard" in script
+    assert "Blob" in script
+    assert "隐私邮箱地址" in script
+    assert "邮件查看地址" in script
+    assert "email-confirm-dialog" in script
+    assert "before" in script
+    assert "after" in script
+
+
+def test_admin_can_import_one_email_per_line_and_skip_invalid_or_duplicate(client: TestClient) -> None:
+    _login(client)
+    _seed_target(client)
+    csrf = _csrf(client)
+
+    response = client.post(
+        "/admin/targets/import",
+        data={
+            "email_addresses": "new@example.com\nnot-an-email\nnotes@example.com\nNEW@example.com\n",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "imported=1" in response.headers["location"]
+    assert "invalid=1" in response.headers["location"]
+    assert "skipped=2" in response.headers["location"]
+    db = client.app.state.session_factory()
+    try:
+        assert db.query(PrivateTarget).filter_by(normalized_email="new@example.com").count() == 1
+        assert db.query(PrivateTarget).filter_by(normalized_email="notes@example.com").count() == 1
+    finally:
+        db.close()
+
+
+def test_admin_can_update_target_email_without_changing_access_token(client: TestClient) -> None:
+    _login(client)
+    target_id = _seed_target(client)
+    csrf = _csrf(client)
+    db = client.app.state.session_factory()
+    original_token = db.get(PrivateTarget, target_id).access_token
+    db.close()
+
+    response = client.post(
+        f"/admin/targets/{target_id}/email",
+        data={"email_address": "  Changed@Example.COM ", "csrf_token": csrf},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "email_address": "Changed@Example.COM",
+        "normalized_email": "changed@example.com",
+    }
+    db = client.app.state.session_factory()
+    try:
+        target = db.get(PrivateTarget, target_id)
+        assert target.email_address == "Changed@Example.COM"
+        assert target.normalized_email == "changed@example.com"
+        assert target.access_token == original_token
+    finally:
+        db.close()
+
+
+def test_admin_rejects_invalid_target_email_without_overwriting(client: TestClient) -> None:
+    _login(client)
+    target_id = _seed_target(client)
+    csrf = _csrf(client)
+
+    response = client.post(
+        f"/admin/targets/{target_id}/email",
+        data={"email_address": "not-an-email", "csrf_token": csrf},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["status"] == "error"
+    db = client.app.state.session_factory()
+    try:
+        target = db.get(PrivateTarget, target_id)
+        assert target.email_address == "notes@example.com"
+        assert target.normalized_email == "notes@example.com"
+    finally:
+        db.close()
+
+
+def test_admin_rejects_duplicate_target_email_without_overwriting(client: TestClient) -> None:
+    _login(client)
+    target_id = _seed_target(client)
+    csrf = _csrf(client)
+    db = client.app.state.session_factory()
+    db.add(
+        PrivateTarget(
+            email_address="other@example.com",
+            normalized_email="other@example.com",
+            access_token="22222222-2222-4222-8222-222222222222",
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.post(
+        f"/admin/targets/{target_id}/email",
+        data={"email_address": "other@example.com", "csrf_token": csrf},
+    )
+
+    assert response.status_code == 400
+    assert "已存在" in response.json()["error"]
+    db = client.app.state.session_factory()
+    try:
+        target = db.get(PrivateTarget, target_id)
+        assert target.email_address == "notes@example.com"
+        assert target.normalized_email == "notes@example.com"
+    finally:
+        db.close()
