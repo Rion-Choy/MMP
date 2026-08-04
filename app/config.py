@@ -47,7 +47,7 @@ ADMIN_SESSION_COOKIE = os.environ.get("MAIL_PORTAL_ADMIN_SESSION_COOKIE", "mail_
 ADMIN_CSRF_COOKIE = os.environ.get("MAIL_PORTAL_ADMIN_CSRF_COOKIE", "mail_portal_admin_csrf")
 PUBLIC_SESSION_TTL_SECONDS = int(os.environ.get("MAIL_PORTAL_PUBLIC_SESSION_TTL", "1800"))
 CAPTCHA_TTL_SECONDS = int(os.environ.get("MAIL_PORTAL_CAPTCHA_TTL", "300"))
-ADMIN_SESSION_TTL_SECONDS = int(os.environ.get("MAIL_PORTAL_ADMIN_SESSION_TTL", "3600"))
+ADMIN_SESSION_TTL_SECONDS = int(os.environ.get("MAIL_PORTAL_ADMIN_SESSION_TTL", "86400"))
 APP_HOST = os.environ.get("MAIL_PORTAL_HOST", "127.0.0.1")
 # Keep repository defaults generic; production deployments must provide this
 # through MAIL_PORTAL_PORT in the service environment.

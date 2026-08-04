@@ -27,7 +27,7 @@ def test_public_url_get_creates_captcha_session(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "验证码" in response.text
-    assert "mail_portal_session" in response.headers.get("set-cookie", "")
+    assert "mail_portal_session_" in response.headers.get("set-cookie", "")
 
     captcha = client.get(f"/m/{token}/captcha.svg")
     assert captcha.status_code == 200

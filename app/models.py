@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -23,28 +23,9 @@ class PrivateTarget(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     removed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    tag_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     sessions: Mapped[list["PublicSession"]] = relationship(back_populates="target")
-    tag: Mapped[Optional["TargetTag"]] = relationship(
-        back_populates="targets",
-        primaryjoin=lambda: foreign(PrivateTarget.tag_id) == TargetTag.id,
-    )
-
-
-class TargetTag(Base):
-    __tablename__ = "target_tags"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(64), nullable=False)
-    normalized_name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
-
-    targets: Mapped[list[PrivateTarget]] = relationship(
-        back_populates="tag",
-        primaryjoin=lambda: foreign(PrivateTarget.tag_id) == TargetTag.id,
-    )
 
 
 class MailMessage(Base):

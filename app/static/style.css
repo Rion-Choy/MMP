@@ -207,6 +207,7 @@ h3 { margin: 0; font-size: .92rem; }
 .admin-mail-card { padding: 20px 22px; }
 .mail-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .mail-card-meta .mail-card-label { margin-bottom: 0; }
+.mail-recipient { flex: 1; min-width: 0; color: var(--text-secondary); font-size: .76rem; font-weight: 700; overflow-wrap: anywhere; }
 .mail-meta-time { color: var(--text-secondary); font-size: .76rem; font-weight: 650; }
 .mail-context { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 9px 0 14px; color: var(--text-muted); font-size: .72rem; }
 .mail-context span + span { position: relative; }
@@ -231,23 +232,13 @@ h3 { margin: 0; font-size: .92rem; }
 .page-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
 .toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .create-card { margin-bottom: 16px; padding: 18px 20px; }
-.tag-toolbar { margin-bottom: 16px; padding: 18px 20px; }
-.tag-create-inline { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
 .inline-form { display: flex; align-items: end; gap: 10px; }
 .inline-form .field { flex: 1; }
-.tag-color-field { flex: 0 0 110px !important; }
-.color-input { min-height: 42px; padding: 4px; }
-.tag-edit-form { display: flex; align-items: center; gap: 6px; min-width: 230px; }
-.tag-edit-form .input { min-width: 120px; }
-.tag-quick-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 280px; max-width: 470px; }
-.tag-quick-actions form { margin: 0; }
-.tag-quick-button { min-height: 30px; padding: 5px 9px; border: 1px solid color-mix(in srgb, var(--tag-color, var(--accent)) 24%, white); border-radius: 999px; cursor: pointer; color: var(--tag-color, var(--text-secondary)); background: color-mix(in srgb, var(--tag-color, var(--accent)) 7%, white); font-size: .7rem; font-weight: 700; transition: var(--transition); }
-.tag-quick-button:hover, .tag-quick-button.active { color: #fff; border-color: var(--tag-color, var(--accent)); background: var(--tag-color, var(--accent)); }
-.tag-inline-create { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; }
-.tag-inline-create .input { width: 100px; min-height: 30px; padding: 5px 8px; font-size: .7rem; }
-.tag-add-button { width: 30px; padding: 4px; color: var(--accent); border-color: rgba(37,99,235,.24); background: rgba(37,99,235,.08); font-size: .95rem; line-height: 1; }
-.tag-add-button:hover { color: #fff; background: var(--accent); }
-.tag-chip { display: inline-flex; align-items: center; padding: 4px 9px; border: 1px solid color-mix(in srgb, var(--tag-color, var(--accent)) 24%, white); border-radius: 999px; color: var(--tag-color, var(--accent)); background: color-mix(in srgb, var(--tag-color, var(--accent)) 10%, white); font-size: .74rem; font-weight: 700; }
+.note-editor { width: 86px; }
+.target-note { width: 86px; height: 32px; min-height: 32px; box-sizing: border-box; resize: none; font-size: .76rem; }
+.note-status { display: block; min-height: 1.1em; margin-top: 4px; color: var(--text-muted); font-size: .68rem; }
+.note-status[data-state="ok"] { color: #15803d; }
+.note-status[data-state="error"] { color: var(--danger); }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; min-width: 700px; border-collapse: collapse; }
 th { padding: 11px 12px; color: var(--text-muted); font-size: .69rem; font-weight: 800; letter-spacing: .08em; text-align: left; text-transform: uppercase; }

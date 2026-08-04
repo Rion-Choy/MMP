@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.models import MailMessage, MailRecipient, PrivateTarget, PublicSession
 from app.services.instance_secrets import secret_mac, session_id_hash
+from app.routes.public import public_session_cookie_name
 
 
 TOKEN = "55555555-5555-4555-8555-555555555555"
@@ -56,7 +57,7 @@ def _set_verified_session(client: TestClient, *, expired: bool = False) -> str:
     )
     db.commit()
     db.close()
-    client.cookies.set("mail_portal_session", raw_id)
+    client.cookies.set(public_session_cookie_name(TOKEN), raw_id)
     return raw_id
 
 
@@ -85,7 +86,11 @@ def test_refresh_recreates_captcha_when_public_session_is_expired(client: TestCl
     assert payload["status"] == "captcha_required"
     assert "验证码" in payload["html"]
     assert "captcha.svg" in payload["html"]
-    cookie_values = [cookie.value for cookie in client.cookies.jar if cookie.name == "mail_portal_session"]
+    cookie_values = [
+        cookie.value
+        for cookie in client.cookies.jar
+        if cookie.name == public_session_cookie_name(TOKEN)
+    ]
     assert len(set(cookie_values)) >= 2
 
 

@@ -44,8 +44,8 @@
         {% endif %}
         {% for message in messages %}
         <article class="glass-panel mail-card admin-mail-card">
-          <div class="mail-card-meta"><span class="mail-card-label">Message body</span><span class="mail-meta-time">接收于 {{ message.received_at|beijing_time }}</span></div>
-          <div class="mail-context"><span>归档时间：{{ message.first_archived_at|beijing_time }}</span>{% if message.folder_name %}<span>文件夹：{{ message.folder_name }}</span>{% endif %}<span>邮件编号：{{ message.id }}</span></div>
+          <div class="mail-card-meta"><span class="mail-card-label">Message body</span><span class="mail-recipient">收件人：{{ message.recipients|selectattr('recipient_type', 'equalto', 'to')|map(attribute='normalized_email')|join('、') or '未记录' }}</span><span class="mail-meta-time">接收于 {{ message.received_at|beijing_time }}</span></div>
+          <div class="mail-context">{% if message.recipients|selectattr('recipient_type', 'equalto', 'cc')|map(attribute='normalized_email')|join('、') %}<span>抄送：{{ message.recipients|selectattr('recipient_type', 'equalto', 'cc')|map(attribute='normalized_email')|join('、') }}</span>{% endif %}<span>归档时间：{{ message.first_archived_at|beijing_time }}</span>{% if message.folder_name %}<span>文件夹：{{ message.folder_name }}</span>{% endif %}<span>邮件编号：{{ message.id }}</span></div>
           <pre class="mail-body">{{ message.body_text }}</pre>
         </article>
         {% endfor %}

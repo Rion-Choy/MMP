@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
+
 from fastapi import APIRouter, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response as PlainResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import CAPTCHA_TTL_SECONDS, PUBLIC_SESSION_COOKIE
+from app.config import CAPTCHA_TTL_SECONDS, PUBLIC_SESSION_TTL_SECONDS, PUBLIC_SESSION_COOKIE
 from app.models import MailMessage, MailRecipient, PrivateTarget
 from app.services.instance_secrets import decrypt_secret_text, load_instance_secrets
 from app.services.public_session import (
@@ -35,6 +37,12 @@ def instance_secret(request: Request, key: str) -> str:
     return value
 
 
+def public_session_cookie_name(token: str) -> str:
+    """Return a browser cookie name isolated to one public mailbox token."""
+    suffix = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+    return f"{PUBLIC_SESSION_COOKIE}_{suffix}"
+
+
 def no_store(response: Response) -> Response:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -42,14 +50,14 @@ def no_store(response: Response) -> Response:
     return response
 
 
-def set_public_session_cookie(request: Request, response: Response, raw_id: str) -> Response:
+def set_public_session_cookie(request: Request, response: Response, token: str, raw_id: str) -> Response:
     response.set_cookie(
-        PUBLIC_SESSION_COOKIE,
+        public_session_cookie_name(token),
         raw_id,
         httponly=True,
         samesite="strict",
         secure=not request.app.state.testing,
-        max_age=1800,
+        max_age=PUBLIC_SESSION_TTL_SECONDS,
         path="/",
     )
     return response
@@ -112,8 +120,9 @@ def render_messages_fragment(
     return templates.env.get_template("public/_messages_content.html").render(**context)
 
 
-def get_or_create_public_session(request: Request, db: Session, target_id: int):
-    raw_id = request.cookies.get(PUBLIC_SESSION_COOKIE)
+def get_or_create_public_session(request: Request, db: Session, token: str, target_id: int):
+    cookie_name = public_session_cookie_name(token)
+    raw_id = request.cookies.get(cookie_name)
     if raw_id:
         session = find_session(db, raw_id, target_id)
         if session is not None:
@@ -134,7 +143,7 @@ def public_entry(request: Request, token: str) -> Response:
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
-        raw_id, session, created = get_or_create_public_session(request, db, target.id)
+        raw_id, session, created = get_or_create_public_session(request, db, token, target.id)
         if session_is_verified(session):
             response = RedirectResponse(f"/m/{token}/view?page=1", status_code=303)
         else:
@@ -144,7 +153,7 @@ def public_entry(request: Request, token: str) -> Response:
                 {"token": token, "error": None, "captcha_ttl": CAPTCHA_TTL_SECONDS},
             )
         if created:
-            set_public_session_cookie(request, response, raw_id)
+            set_public_session_cookie(request, response, token, raw_id)
         return no_store(response)
     finally:
         db.close()
@@ -152,14 +161,12 @@ def public_entry(request: Request, token: str) -> Response:
 
 @router.get("/m/{token}/captcha.svg")
 def captcha_image(request: Request, token: str) -> Response:
-    # Public image endpoints must not disclose the answer; SVG is rendered from
-    # the server-side session challenge and intentionally cannot be cached.
     db = db_session(request)
     try:
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
-        raw_id = request.cookies.get(PUBLIC_SESSION_COOKIE)
+        raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None
         if session is None or session_is_verified(session):
             raise HTTPException(status_code=404, detail="captcha unavailable")
@@ -183,7 +190,7 @@ def verify_public_captcha(request: Request, token: str, answer: str = Form(...))
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
-        raw_id = request.cookies.get(PUBLIC_SESSION_COOKIE)
+        raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None
         if session is None:
             return no_store(RedirectResponse(f"/m/{token}", status_code=303))
@@ -208,7 +215,7 @@ def public_messages(request: Request, token: str, page: int = 1) -> Response:
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
-        raw_id = request.cookies.get(PUBLIC_SESSION_COOKIE)
+        raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None
         if session is None or not session_is_verified(session):
             return no_store(RedirectResponse(f"/m/{token}", status_code=303))
@@ -235,7 +242,7 @@ def refresh_public_messages(request: Request, token: str, page: int = 1) -> Resp
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
 
-        raw_id = request.cookies.get(PUBLIC_SESSION_COOKIE)
+        raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None
         created = False
         if session is None:
@@ -251,7 +258,7 @@ def refresh_public_messages(request: Request, token: str, page: int = 1) -> Resp
                 {"status": "captcha_required", "html": render_captcha_fragment(request, token)}
             )
             if created:
-                set_public_session_cookie(request, response, raw_id)
+                set_public_session_cookie(request, response, token, raw_id)
             return no_store(response)
 
         touch_session(session)

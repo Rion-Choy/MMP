@@ -5,14 +5,14 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 from uuid import uuid4
 
-from app.config import ADMIN_CSRF_COOKIE, ADMIN_SESSION_COOKIE, sync_lock_path
+from app.config import ADMIN_CSRF_COOKIE, ADMIN_SESSION_COOKIE, ADMIN_SESSION_TTL_SECONDS, sync_lock_path
 from app.dependencies import require_admin
-from app.models import AppSetting, MailMessage, MailRecipient, PrivateTarget, SyncRun, TargetTag
+from app.models import AppSetting, MailMessage, MailRecipient, PrivateTarget, SyncRun
 from app.services.admin_session import authenticate_admin
 from app.services.csrf import new_csrf_token, validate_csrf
 from app.services.email_normalization import normalize_email_address
@@ -51,10 +51,15 @@ from app.services.settings_service import (
     set_sync_interval,
 )
 from app.services.target_service import create_target, delete_target, disable_target, enable_target
-from app.services.tag_service import assign_tag, create_tag, delete_tag, rename_tag
+from app.services.note_service import update_target_note
 from app.templates import templates
 
 router = APIRouter(prefix="/admin")
+
+
+@router.get("/tags", dependencies=[Depends(require_admin)])
+def retired_tags_page() -> Response:
+    return RedirectResponse("/admin/targets", status_code=301)
 
 
 _BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -129,7 +134,7 @@ def csrf_context(request: Request) -> dict[str, str]:
 
 def set_csrf_cookie(request: Request, response: Response, token: str) -> Response:
     if request.cookies.get(ADMIN_CSRF_COOKIE) != token:
-        response.set_cookie(ADMIN_CSRF_COOKIE, token, httponly=False, samesite="strict", secure=not request.app.state.testing, max_age=3600)
+        response.set_cookie(ADMIN_CSRF_COOKIE, token, httponly=False, samesite="strict", secure=not request.app.state.testing, max_age=ADMIN_SESSION_TTL_SECONDS)
     return response
 
 
@@ -169,7 +174,7 @@ def login(request: Request, password: str = Form(...), csrf_token: str = Form(..
         response = templates.TemplateResponse(request, "admin/login.html", {"error": "密码错误", "csrf_token": csrf_token}, status_code=401)
         return set_csrf_cookie(request, no_store(response), csrf_token)
     response = RedirectResponse("/admin", status_code=303)
-    response.set_cookie(ADMIN_SESSION_COOKIE, cookie, httponly=True, samesite="lax", secure=not request.app.state.testing, max_age=3600)
+    response.set_cookie(ADMIN_SESSION_COOKIE, cookie, httponly=True, samesite="lax", secure=not request.app.state.testing, max_age=ADMIN_SESSION_TTL_SECONDS)
     return no_store(response)
 
 
@@ -247,6 +252,7 @@ def messages_page(
         messages = list(
             db.scalars(
                 filtered_query
+                .options(selectinload(MailMessage.recipients))
                 .order_by(MailMessage.received_at.desc(), MailMessage.id.desc())
                 .offset((page - 1) * page_size)
                 .limit(page_size + 1)
@@ -254,6 +260,10 @@ def messages_page(
         )
         has_next = len(messages) > page_size
         messages = messages[:page_size]
+        for message in messages:
+            message.recipients.sort(
+                key=lambda recipient: (recipient.recipient_type != "to", recipient.normalized_email)
+            )
         folders = [
             value
             for value in db.scalars(
@@ -301,16 +311,13 @@ def messages_page(
 
 
 @router.get("/targets", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
-def targets_page(request: Request, tag_id: int | None = Query(default=None)) -> Response:
+def targets_page(request: Request) -> Response:
     db = request.app.state.session_factory()
     try:
         query = select(PrivateTarget).where(PrivateTarget.removed_at.is_(None))
-        if tag_id is not None:
-            query = query.where(PrivateTarget.tag_id == tag_id)
         targets = list(db.scalars(query.order_by(PrivateTarget.created_at.desc(), PrivateTarget.id.desc())))
-        tags = list(db.scalars(select(TargetTag).order_by(TargetTag.name.asc())))
         token = csrf_context(request)["csrf_token"]
-        response = templates.TemplateResponse(request, "admin/targets.html", {"targets": targets, "tags": tags, "selected_tag_id": tag_id, "error": None, "csrf_token": token})
+        response = templates.TemplateResponse(request, "admin/targets.html", {"targets": targets, "error": None, "csrf_token": token})
         return set_csrf_cookie(request, no_store(response), token)
     finally:
         db.close()
@@ -327,120 +334,31 @@ def add_target(request: Request, email_address: str = Form(...), csrf_token: str
         except ValueError:
             db.rollback()
             targets = list(db.scalars(select(PrivateTarget).where(PrivateTarget.removed_at.is_(None)).order_by(PrivateTarget.created_at.desc(), PrivateTarget.id.desc())))
-            tags = list(db.scalars(select(TargetTag).order_by(TargetTag.name.asc())))
-            response = templates.TemplateResponse(request, "admin/targets.html", {"targets": targets, "tags": tags, "selected_tag_id": None, "error": "邮箱地址格式不正确", "csrf_token": csrf_token}, status_code=400)
+            response = templates.TemplateResponse(request, "admin/targets.html", {"targets": targets, "error": "邮箱地址格式不正确", "csrf_token": csrf_token}, status_code=400)
             return set_csrf_cookie(request, no_store(response), csrf_token)
         return no_store(RedirectResponse("/admin/targets", status_code=303))
     finally:
         db.close()
 
 
-def _assign_target_tag(request: Request, target_id: int, tag_id: int | None) -> Response:
-    db = request.app.state.session_factory()
-    try:
-        if assign_tag(db, target_id, tag_id) is None:
-            raise ValueError("隐私邮箱不存在")
-        db.commit()
-        return no_store(RedirectResponse("/admin/targets", status_code=303))
-    except (ValueError, TypeError):
-        db.rollback()
-        return no_store(RedirectResponse("/admin/targets?tag_error=invalid", status_code=303))
-    finally:
-        db.close()
-
-
-@router.post("/targets/{target_id}/tag", dependencies=[Depends(require_admin)])
-def assign_target_tag(request: Request, target_id: int, tag_id: str = Form(""), csrf_token: str = Form(...)) -> Response:
-    validate_csrf(request, csrf_token)
-    try:
-        value = int(tag_id) if tag_id.strip() else None
-    except (TypeError, ValueError):
-        return no_store(RedirectResponse("/admin/targets?tag_error=invalid", status_code=303))
-    return _assign_target_tag(request, target_id, value)
-
-
-@router.post("/targets/{target_id}/tag/create", dependencies=[Depends(require_admin)])
-def create_and_assign_target_tag(
+@router.post("/targets/{target_id}/note", dependencies=[Depends(require_admin)])
+def save_target_note(
     request: Request,
     target_id: int,
-    name: str = Form(...),
+    note: str = Form(""),
     csrf_token: str = Form(...),
 ) -> Response:
     validate_csrf(request, csrf_token)
     db = request.app.state.session_factory()
     try:
-        target = db.get(PrivateTarget, target_id)
-        if target is None or target.removed_at is not None:
-            raise ValueError("隐私邮箱不存在")
-        tag = create_tag(db, name)
-        target.tag_id = tag.id
+        target = update_target_note(db, target_id, note)
+        if target is None:
+            return no_store(JSONResponse({"status": "error", "error": "隐私邮箱不存在"}, status_code=404))
         db.commit()
-        return no_store(RedirectResponse("/admin/targets", status_code=303))
-    except (ValueError, TypeError):
-        db.rollback()
-        return no_store(RedirectResponse("/admin/targets?tag_error=invalid", status_code=303))
-    finally:
-        db.close()
-
-
-@router.get("/tags", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
-def tags_page(request: Request) -> Response:
-    db = request.app.state.session_factory()
-    try:
-        tags = list(db.scalars(select(TargetTag).order_by(TargetTag.name.asc())))
-        token = csrf_context(request)["csrf_token"]
-        response = templates.TemplateResponse(request, "admin/tags.html", {"tags": tags, "error": request.query_params.get("error"), "csrf_token": token})
-        return set_csrf_cookie(request, no_store(response), token)
-    finally:
-        db.close()
-
-
-def _tag_redirect(next_path: str, *, error: bool = False) -> str:
-    destination = "/admin/targets" if next_path == "/admin/targets" else "/admin/tags"
-    if error:
-        return f"{destination}?tag_error=invalid" if destination == "/admin/targets" else f"{destination}?error=invalid"
-    return destination
-
-
-@router.post("/tags", dependencies=[Depends(require_admin)])
-def add_tag(request: Request, name: str = Form(...), color: str = Form(""), next_path: str = Form("/admin/tags"), csrf_token: str = Form(...)) -> Response:
-    validate_csrf(request, csrf_token)
-    db = request.app.state.session_factory()
-    try:
-        create_tag(db, name, color)
-        db.commit()
-        return no_store(RedirectResponse(_tag_redirect(next_path), status_code=303))
+        return no_store(JSONResponse({"status": "ok", "note": target.note or ""}))
     except ValueError as exc:
         db.rollback()
-        return no_store(RedirectResponse(_tag_redirect(next_path, error=True), status_code=303))
-    finally:
-        db.close()
-
-
-@router.post("/tags/{tag_id}", dependencies=[Depends(require_admin)])
-def edit_tag(request: Request, tag_id: int, name: str = Form(...), color: str = Form(""), csrf_token: str = Form(...)) -> Response:
-    validate_csrf(request, csrf_token)
-    db = request.app.state.session_factory()
-    try:
-        if rename_tag(db, tag_id, name, color) is None:
-            raise ValueError("标签不存在")
-        db.commit()
-        return no_store(RedirectResponse("/admin/tags", status_code=303))
-    except ValueError as exc:
-        db.rollback()
-        return no_store(RedirectResponse(f"/admin/tags?error={str(exc)}", status_code=303))
-    finally:
-        db.close()
-
-
-@router.post("/tags/{tag_id}/delete", dependencies=[Depends(require_admin)])
-def remove_tag(request: Request, tag_id: int, csrf_token: str = Form(...)) -> Response:
-    validate_csrf(request, csrf_token)
-    db = request.app.state.session_factory()
-    try:
-        delete_tag(db, tag_id)
-        db.commit()
-        return no_store(RedirectResponse("/admin/tags", status_code=303))
+        return no_store(JSONResponse({"status": "error", "error": str(exc)}, status_code=400))
     finally:
         db.close()
 

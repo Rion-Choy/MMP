@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.models import MailMessage, MailRecipient, PrivateTarget, PublicSession, SyncRun
+from app.routes.public import public_session_cookie_name
 from app.services.instance_secrets import load_instance_secrets
 
 
@@ -47,6 +48,7 @@ def _seed_archived_message(
     received_at: datetime,
     body: str,
     recipient: str,
+    cc: tuple[str, ...] = (),
     folder_name: str = "收件箱",
 ) -> None:
     db = client.app.state.session_factory()
@@ -59,6 +61,9 @@ def _seed_archived_message(
         last_seen_at=received_at,
     )
     message.recipients.append(MailRecipient(normalized_email=recipient, recipient_type="to"))
+    message.recipients.extend(
+        MailRecipient(normalized_email=address, recipient_type="cc") for address in cc
+    )
     db.add(message)
     db.commit()
     db.close()
@@ -146,6 +151,7 @@ def test_all_mail_page_lists_archived_messages_newest_first_with_mail_view_style
         received_at=datetime(2026, 8, 3, 12, 0, 0),
         body="new archived body",
         recipient="new@example.com",
+        cc=("copy@example.com",),
         folder_name="收件箱",
     )
     _seed_archived_message(
@@ -166,9 +172,30 @@ def test_all_mail_page_lists_archived_messages_newest_first_with_mail_view_style
     assert page.text.index("new archived body") < page.text.index("old archived body")
     assert "2026-08-03 20:00:00" in page.text
     assert "2026-08-02 20:00:00" in page.text
+    assert page.text.count("收件人：new@example.com") == 1
+    assert page.text.count("收件人：old@example.com") == 1
+    assert "抄送：copy@example.com" in page.text
     assert "mail-card" in page.text
     assert 'class="mail-body"' in page.text
     assert 'class="public-content"' in page.text
+
+
+def test_all_mail_page_displays_to_recipients_in_header_and_cc_as_context(client: TestClient) -> None:
+    _login_admin(client)
+    _seed_archived_message(
+        client,
+        immutable_id="archive-recipient-header",
+        received_at=datetime(2026, 8, 3, 13, 0, 0),
+        body="recipient header body",
+        recipient="to@example.com",
+        cc=("cc@example.com",),
+    )
+
+    page = client.get("/admin/messages")
+
+    assert page.status_code == 200
+    assert 'class="mail-recipient">收件人：to@example.com</span>' in page.text
+    assert "抄送：cc@example.com" in page.text
 
 
 def test_all_mail_page_supports_query_filters_and_pagination(client: TestClient) -> None:
@@ -285,8 +312,12 @@ def test_public_session_cookie_cannot_access_other_target(client: TestClient) ->
     second = _seed_target(client, "33333333-3333-4333-8333-333333333333")
     response = client.get(f"/m/{first}")
     assert response.status_code == 200
-    cookie = response.cookies.get("mail_portal_session")
+    cookie = response.cookies.get(public_session_cookie_name(first))
     assert cookie
-    other = client.get(f"/m/{second}/view?page=1", cookies={"mail_portal_session": cookie}, follow_redirects=False)
+    other = client.get(
+        f"/m/{second}/view?page=1",
+        cookies={public_session_cookie_name(first): cookie},
+        follow_redirects=False,
+    )
     assert other.status_code == 303
     assert other.headers["location"] == f"/m/{second}"
