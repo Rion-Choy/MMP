@@ -1,0 +1,25 @@
+[Unit]
+Description=Mail Portal web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=__APP_ROOT__
+Environment=MAIL_PORTAL_DATA_DIR=__RUNTIME_DIR__
+Environment=MAIL_PORTAL_HOST=__APP_HOST__
+Environment=MAIL_PORTAL_PORT=__APP_PORT__
+Environment=MAIL_PORTAL_OAUTH_REDIRECT_URI=__OAUTH_REDIRECT_URI__
+ExecStart=__APP_ROOT__/.venv/bin/uvicorn app.main:app --host __APP_HOST__ --port __APP_PORT__ --proxy-headers
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__RUNTIME_DIR__
+
+[Install]
+WantedBy=multi-user.target

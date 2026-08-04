@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="stylesheet" href="/static/style.css?v=20260803-admin-messages">
+  <title>全部邮件 · Mail Portal</title>
+</head>
+<body>
+  <div class="page-shell wide">
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 5 8-5"/></svg></div>
+        <div class="brand-copy"><p class="brand-title">全部邮件</p><p class="brand-subtitle">管理员归档邮件查看</p></div>
+      </div>
+      <div class="header-actions"><nav class="header-nav"><a href="/admin">概览</a><a href="/admin/targets">隐私邮箱</a><a href="/admin/mailbox">母邮箱配置</a></nav><span class="status-chip">管理模式</span></div>
+    </header>
+
+    <main class="public-content">
+      <section class="glass-panel card">
+        <div class="section-heading">
+          <div><p class="eyebrow">Mailbox archive</p><h1>全部邮件</h1><p class="lead">按归档记录查看所有已同步邮件，可按收件人、文件夹、正文和日期筛选。</p></div>
+          <a class="btn btn-secondary" href="/admin">返回概览</a>
+        </div>
+        <form class="archive-filter" method="get" action="/admin/messages">
+          <div class="field"><label for="q">正文关键词</label><input class="input" id="q" type="search" name="q" value="{{ q }}" placeholder="搜索邮件正文"></div>
+          <div class="field"><label for="recipient">收件人 / 抄送</label><input class="input" id="recipient" type="email" name="recipient" value="{{ recipient }}" placeholder="recipient@example.com"></div>
+          <div class="field"><label for="folder">文件夹</label><select class="select" id="folder" name="folder"><option value="">全部文件夹</option>{% for item in folders %}<option value="{{ item }}" {% if item == folder %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></div>
+          <div class="field"><label for="received_from">接收日期起</label><input class="input" id="received_from" type="date" name="received_from" value="{{ received_from }}"></div>
+          <div class="field"><label for="received_to">接收日期止</label><input class="input" id="received_to" type="date" name="received_to" value="{{ received_to }}"></div>
+          <div class="field"><label for="page_size">每页数量</label><select class="select" id="page_size" name="page_size"><option value="20" {% if page_size == 20 %}selected{% endif %}>20</option><option value="50" {% if page_size == 50 %}selected{% endif %}>50</option><option value="100" {% if page_size == 100 %}selected{% endif %}>100</option></select></div>
+          <div class="filter-actions"><button class="btn btn-primary" type="submit">查询</button><a class="btn btn-secondary" href="/admin/messages">清空</a></div>
+        </form>
+      </section>
+
+      <section class="mail-list" aria-label="全部归档邮件">
+        <div class="archive-summary"><span>共 {{ total_count }} 封</span><span>第 {{ page }} 页</span></div>
+        {% if not messages %}
+        <div class="glass-panel empty-state">
+          <div class="empty-icon" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 5 8-5"/></svg></div>
+          <p>没有符合条件的归档邮件</p><p class="muted">调整查询条件后再试。</p>
+        </div>
+        {% endif %}
+        {% for message in messages %}
+        <article class="glass-panel mail-card admin-mail-card">
+          <div class="mail-card-meta"><span class="mail-card-label">Message body</span><span class="mail-meta-time">接收于 {{ message.received_at|beijing_time }}</span></div>
+          <div class="mail-context"><span>归档时间：{{ message.first_archived_at|beijing_time }}</span>{% if message.folder_name %}<span>文件夹：{{ message.folder_name }}</span>{% endif %}<span>邮件编号：{{ message.id }}</span></div>
+          <pre class="mail-body">{{ message.body_text }}</pre>
+        </article>
+        {% endfor %}
+      </section>
+
+      {% if page > 1 or has_next %}
+      <nav class="pager" aria-label="全部邮件分页">
+        {% if page > 1 %}<a class="btn btn-secondary" href="/admin/messages?{{ previous_query }}">上一页</a>{% endif %}
+        {% if has_next %}<a class="btn btn-primary" href="/admin/messages?{{ next_query }}">下一页</a>{% endif %}
+      </nav>
+      {% endif %}
+    </main>
+  </div>
+</body>
+</html>

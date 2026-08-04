@@ -1,0 +1,22 @@
+[Unit]
+Description=Mail Portal synchronization worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=__APP_ROOT__
+Environment=MAIL_PORTAL_DATA_DIR=__RUNTIME_DIR__
+ExecStart=__APP_ROOT__/.venv/bin/python scripts/run_worker.py
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__RUNTIME_DIR__
+
+[Install]
+WantedBy=multi-user.target

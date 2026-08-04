@@ -1,0 +1,1 @@
+"""Mail Portal application package."""

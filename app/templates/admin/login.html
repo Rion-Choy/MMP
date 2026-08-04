@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="stylesheet" href="/static/style.css?v=20260802-theme">
+  <title>管理登录 · Mail Portal</title>
+</head>
+<body>
+  <div class="page-shell narrow">
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6l8-3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg></div>
+        <div class="brand-copy"><p class="brand-title">Mail Portal</p><p class="brand-subtitle">管理控制台</p></div>
+      </div>
+      <span class="status-chip">管理入口</span>
+    </header>
+
+    <main class="auth-layout">
+      <section class="glass-panel auth-card">
+        <div class="auth-heading">
+          <div class="auth-icon" aria-hidden="true"><svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+          <p class="eyebrow">Administrator</p>
+          <h1>欢迎回来</h1>
+          <p class="lead">登录后管理母邮箱、隐私邮箱和同步任务。</p>
+        </div>
+        {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+        <form class="form-stack" method="post" action="/admin/login" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="field"><label for="password">管理员密码</label><input class="input" id="password" type="password" name="password" placeholder="请输入管理员密码" required autofocus></div>
+          <button class="btn btn-primary btn-block" type="submit">登录控制台</button>
+        </form>
+        <p class="page-note">管理操作仅在当前安全连接中进行。</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

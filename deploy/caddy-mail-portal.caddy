@@ -1,0 +1,11 @@
+# Template: render __APP_DOMAIN__, __APP_HOST__, and __APP_PORT__ before loading.
+__APP_DOMAIN__ {
+    encode gzip
+    reverse_proxy __APP_HOST__:__APP_PORT__
+    header {
+        Cache-Control "no-store"
+        Referrer-Policy "no-referrer"
+        X-Content-Type-Options "nosniff"
+        Content-Security-Policy "default-src 'self'; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    }
+}

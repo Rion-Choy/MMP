@@ -1,0 +1,22 @@
+<section class="glass-panel auth-card captcha-card refresh-captcha" aria-labelledby="refresh-captcha-title">
+  <div class="auth-heading">
+    <div class="auth-icon" aria-hidden="true">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M9 15h.01M12 15h.01M15 15h.01"/></svg>
+    </div>
+    <p class="eyebrow">Access verification</p>
+    <h1 id="refresh-captcha-title">验证后继续查看</h1>
+    <p class="lead">当前查看会话已过期，请重新输入图片中的 4 位字母或数字。</p>
+  </div>
+  {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+  <div class="captcha-box">
+    <img src="/m/{{ token }}/captcha.svg" alt="验证码" width="180" height="60">
+    <p class="muted small">验证码有效期有限，请按图片准确输入。</p>
+  </div>
+  <form class="form-stack" method="post" action="/m/{{ token }}/verify" autocomplete="off">
+    <div class="field">
+      <label for="refresh-answer">验证码</label>
+      <input class="input captcha-input" id="refresh-answer" name="answer" maxlength="4" minlength="4" inputmode="text" autocomplete="off" required autofocus>
+    </div>
+    <button class="btn btn-primary btn-block" type="submit">继续查看</button>
+  </form>
+</section>

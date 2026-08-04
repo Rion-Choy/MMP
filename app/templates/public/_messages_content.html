@@ -1,0 +1,20 @@
+<section class="mail-list" aria-label="邮件正文列表">
+  {% if not messages %}
+  <div class="glass-panel empty-state">
+    <div class="empty-icon" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 5 8-5"/></svg></div>
+    <p>暂时没有匹配邮件</p><p class="muted">新同步到的邮件会在匹配后显示。</p>
+  </div>
+  {% endif %}
+  {% for message in messages %}
+  <article class="glass-panel mail-card">
+    <div class="mail-card-label">Message body</div>
+    <pre class="mail-body">{{ message.body_text }}</pre>
+  </article>
+  {% endfor %}
+  {% if page > 1 or has_next %}
+  <nav class="pager" aria-label="邮件分页">
+    {% if page > 1 %}<a class="btn btn-secondary" href="/m/{{ token }}/view?page={{ page - 1 }}">上一页</a>{% endif %}
+    {% if has_next %}<a class="btn btn-primary" href="/m/{{ token }}/view?page={{ page + 1 }}">下一页</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>

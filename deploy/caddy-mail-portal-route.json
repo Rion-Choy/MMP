@@ -1,0 +1,45 @@
+{
+  "match": [
+    {
+      "host": ["__APP_DOMAIN__"]
+    }
+  ],
+  "handle": [
+    {
+      "handler": "subroute",
+      "routes": [
+        {
+          "handle": [
+            {
+              "handler": "encode",
+              "encodings": {
+                "gzip": {}
+              },
+              "prefer": ["gzip"]
+            },
+            {
+              "handler": "headers",
+              "response": {
+                "set": {
+                  "Cache-Control": ["no-store"],
+                  "Referrer-Policy": ["no-referrer"],
+                  "X-Content-Type-Options": ["nosniff"],
+                  "Content-Security-Policy": ["default-src 'self'; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"]
+                }
+              }
+            },
+            {
+              "handler": "reverse_proxy",
+              "upstreams": [
+                {
+                  "dial": "__APP_HOST__:__APP_PORT__"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "terminal": true
+}
