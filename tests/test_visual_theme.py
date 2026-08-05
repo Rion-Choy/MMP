@@ -8,6 +8,7 @@ TEMPLATES = [
     "app/templates/admin/dashboard.html",
     "app/templates/admin/targets.html",
     "app/templates/admin/mother_mailbox.html",
+    "app/templates/admin/settings.html",
     "app/templates/admin/messages.html",
 ]
 

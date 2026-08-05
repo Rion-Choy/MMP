@@ -43,9 +43,11 @@ from app.worker import FileSyncLock, SyncWorker
 from app.services.settings_service import (
     MAX_SYNC_INTERVAL_SECONDS,
     MIN_SYNC_INTERVAL_SECONDS,
+    get_captcha_enabled,
     get_enabled_folder_names,
     get_sync_enabled,
     get_sync_interval,
+    set_captcha_enabled,
     set_enabled_folder_names,
     set_sync_enabled,
     set_sync_interval,
@@ -160,6 +162,7 @@ def _sync_context(request: Request) -> dict[str, object]:
             "interval_seconds": get_sync_interval(db),
             "folder_names": ",".join(get_enabled_folder_names(db)),
             "sync_enabled": get_sync_enabled(db),
+            "captcha_enabled": get_captcha_enabled(db),
         }
     finally:
         db.close()
@@ -448,6 +451,7 @@ def delete_target_route(request: Request, target_id: int, csrf_token: str = Form
         db.close()
 
 
+@router.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 @router.get("/mailbox", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 def mailbox_page(request: Request, edit: int = Query(default=0)) -> Response:
     path = request.app.state.microsoft_oauth_path
@@ -472,7 +476,7 @@ def mailbox_page(request: Request, edit: int = Query(default=0)) -> Response:
         "authorization_url": None,
         "device_authorization": None,
     }
-    response = templates.TemplateResponse(request, "admin/mother_mailbox.html", context)
+    response = templates.TemplateResponse(request, "admin/settings.html", context)
     return set_csrf_cookie(request, no_store(response), token)
 
 
@@ -511,6 +515,18 @@ def toggle_sync(request: Request, csrf_token: str = Form(...)) -> Response:
     finally:
         db.close()
     return no_store(RedirectResponse("/admin/mailbox?sync=toggled", status_code=303))
+
+
+@router.post("/mailbox/captcha-toggle", dependencies=[Depends(require_admin)])
+def toggle_captcha(request: Request, csrf_token: str = Form(...)) -> Response:
+    validate_csrf(request, csrf_token)
+    db = request.app.state.session_factory()
+    try:
+        set_captcha_enabled(db, not get_captcha_enabled(db))
+        db.commit()
+    finally:
+        db.close()
+    return no_store(RedirectResponse("/admin/settings?captcha=toggled", status_code=303))
 
 
 @router.post("/mailbox", dependencies=[Depends(require_admin)])
@@ -603,18 +619,29 @@ def _validate_new_oauth_identity(request: Request, candidate: dict[str, str], *,
         raise ValueError("当前手动授权配置已连接，母邮箱信息为只读；请先点击“重新配置授权”")
 
 
-def _mailbox_error_page(request: Request, *, config: dict, interval_seconds: int, folder_names: str, error: str, csrf_token: str) -> Response:
+def _mailbox_error_page(
+    request: Request,
+    *,
+    config: dict,
+    interval_seconds: int,
+    folder_names: str,
+    sync_enabled: bool,
+    captcha_enabled: bool,
+    error: str,
+    csrf_token: str,
+) -> Response:
     return set_csrf_cookie(
         request,
         no_store(
             templates.TemplateResponse(
                 request,
-                "admin/mother_mailbox.html",
+                "admin/settings.html",
                 {
                     "config": config,
                     "interval_seconds": interval_seconds,
                     "folder_names": folder_names,
-                    "sync_enabled": True,
+                    "sync_enabled": sync_enabled,
+                    "captcha_enabled": captcha_enabled,
                     "fields_read_only": False,
                     "can_edit_oauth": False,
                     "error": error,
@@ -683,7 +710,7 @@ def oauth_web_start(
         )
         response = templates.TemplateResponse(
             request,
-            "admin/mother_mailbox.html",
+            "admin/settings.html",
             {
                 "config": {**candidate, "auth_method": "web", "refresh_token_configured": False},
                 **_sync_context(request),
@@ -711,6 +738,8 @@ def oauth_web_start(
             config={"mailbox_address": mailbox_address, "client_id": client_id, "authority": authority, "auth_method": "web"},
             interval_seconds=int(sync["interval_seconds"]),
             folder_names=str(sync["folder_names"]),
+            sync_enabled=bool(sync["sync_enabled"]),
+            captcha_enabled=bool(sync["captcha_enabled"]),
             error=str(exc),
             csrf_token=csrf_token,
         )
@@ -789,7 +818,7 @@ def oauth_device_start(
         sync = _sync_context(request)
         response = templates.TemplateResponse(
             request,
-            "admin/mother_mailbox.html",
+            "admin/settings.html",
             {
                 "config": {**candidate, "auth_method": "device", "refresh_token_configured": False},
                 **sync,
@@ -814,6 +843,8 @@ def oauth_device_start(
             config={"mailbox_address": mailbox_address, "client_id": client_id, "authority": authority, "auth_method": "device"},
             interval_seconds=int(sync["interval_seconds"]),
             folder_names=str(sync["folder_names"]),
+            sync_enabled=bool(sync["sync_enabled"]),
+            captcha_enabled=bool(sync["captcha_enabled"]),
             error=str(exc),
             csrf_token=csrf_token,
         )
@@ -846,12 +877,14 @@ def oauth_device_confirm(request: Request, transaction_id: str = Form(...), csrf
             sync = _sync_context(request)
             response = templates.TemplateResponse(
                 request,
-                "admin/mother_mailbox.html",
+                "admin/settings.html",
                 {
                     "config": {**payload, "auth_method": "device", "refresh_token_configured": False},
                     **sync,
                     "fields_read_only": False,
                     "can_edit_oauth": False,
+                    "sync_enabled": bool(sync["sync_enabled"]),
+                    "captcha_enabled": bool(sync["captcha_enabled"]),
                     "error": "微软授权尚未完成，请在另一设备完成登录后再次确认。",
                     "authorization_url": None,
                     "device_authorization": {

@@ -4,7 +4,36 @@ import pytest
 from sqlalchemy import select
 
 from app.models import AppSetting
-from app.services.settings_service import get_sync_interval, set_sync_interval
+from app.services.settings_service import (
+    get_captcha_enabled,
+    get_sync_interval,
+    set_captcha_enabled,
+    set_sync_interval,
+)
+
+
+def test_captcha_enabled_defaults_to_true() -> None:
+    from app.database import Base, create_engine_for_tests, make_session_factory
+
+    engine = create_engine_for_tests()
+    Base.metadata.create_all(engine)
+    db = make_session_factory(engine)()
+
+    assert get_captcha_enabled(db) is True
+
+
+def test_captcha_enabled_can_be_changed() -> None:
+    from app.database import Base, create_engine_for_tests, make_session_factory
+
+    engine = create_engine_for_tests()
+    Base.metadata.create_all(engine)
+    db = make_session_factory(engine)()
+
+    set_captcha_enabled(db, False)
+    db.commit()
+
+    assert get_captcha_enabled(db) is False
+    assert db.scalar(select(AppSetting).where(AppSetting.setting_key == "captcha_enabled")) is not None
 
 
 def test_sync_interval_defaults_to_thirty_seconds() -> None:

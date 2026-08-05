@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.models import MailMessage, MailRecipient, PrivateTarget, PublicSession
 from app.services.instance_secrets import secret_mac, session_id_hash
 from app.routes.public import public_session_cookie_name
+from app.services.settings_service import set_captcha_enabled
 
 
 TOKEN = "55555555-5555-4555-8555-555555555555"
@@ -92,6 +93,36 @@ def test_refresh_recreates_captcha_when_public_session_is_expired(client: TestCl
         if cookie.name == public_session_cookie_name(TOKEN)
     ]
     assert len(set(cookie_values)) >= 2
+
+
+def test_public_entry_bypasses_captcha_when_admin_disables_it(client: TestClient) -> None:
+    _seed_target(client)
+    db = client.app.state.session_factory()
+    set_captcha_enabled(db, False)
+    db.commit()
+    db.close()
+
+    response = client.get(f"/m/{TOKEN}", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/m/{TOKEN}/view?page=1"
+    assert client.get(f"/m/{TOKEN}/captcha.svg").status_code == 404
+
+
+def test_refresh_returns_mail_fragment_without_captcha_when_disabled(client: TestClient) -> None:
+    _seed_target(client)
+    db = client.app.state.session_factory()
+    set_captcha_enabled(db, False)
+    db.commit()
+    db.close()
+
+    response = client.post(f"/m/{TOKEN}/refresh?page=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert "current body" in payload["html"]
+    assert "验证码" not in payload["html"]
 
 
 def test_public_messages_template_declares_ajax_refresh_contract() -> None:

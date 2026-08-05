@@ -19,6 +19,7 @@ from app.services.public_session import (
     touch_session,
     verify_session_captcha,
 )
+from app.services.settings_service import get_captcha_enabled
 from app.services.target_service import get_active_target
 from app.templates import templates
 
@@ -143,6 +144,8 @@ def public_entry(request: Request, token: str) -> Response:
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
+        if not get_captcha_enabled(db):
+            return no_store(RedirectResponse(f"/m/{token}/view?page=1", status_code=303))
         raw_id, session, created = get_or_create_public_session(request, db, token, target.id)
         if session_is_verified(session):
             response = RedirectResponse(f"/m/{token}/view?page=1", status_code=303)
@@ -166,6 +169,8 @@ def captcha_image(request: Request, token: str) -> Response:
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
+        if not get_captcha_enabled(db):
+            raise HTTPException(status_code=404, detail="captcha disabled")
         raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None
         if session is None or session_is_verified(session):
@@ -190,6 +195,8 @@ def verify_public_captcha(request: Request, token: str, answer: str = Form(...))
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
+        if not get_captcha_enabled(db):
+            raise HTTPException(status_code=404, detail="captcha disabled")
         raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None
         if session is None:
@@ -215,6 +222,9 @@ def public_messages(request: Request, token: str, page: int = 1) -> Response:
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
+        if not get_captcha_enabled(db):
+            context = _messages_context(db, token=token, target=target, page=page)
+            return no_store(templates.TemplateResponse(request, "public/messages.html", context))
         raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None
         if session is None or not session_is_verified(session):
@@ -241,6 +251,19 @@ def refresh_public_messages(request: Request, token: str, page: int = 1) -> Resp
         target = get_active_target(db, token)
         if target is None:
             raise HTTPException(status_code=404, detail="not found")
+
+        if not get_captcha_enabled(db):
+            return no_store(JSONResponse({
+                "status": "ok",
+                "source": "database",
+                "html": render_messages_fragment(
+                    request,
+                    token=token,
+                    target=target,
+                    page=page,
+                    db=db,
+                ),
+            }))
 
         raw_id = request.cookies.get(public_session_cookie_name(token))
         session = find_session(db, raw_id, target.id) if raw_id else None

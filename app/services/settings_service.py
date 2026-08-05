@@ -11,6 +11,7 @@ DEFAULT_SYNC_INTERVAL_SECONDS = 30
 MIN_SYNC_INTERVAL_SECONDS = 10
 MAX_SYNC_INTERVAL_SECONDS = 86400
 DEFAULT_SYNC_ENABLED = True
+DEFAULT_CAPTCHA_ENABLED = True
 
 
 def get_setting(db: Session, key: str, default: str | None = None) -> str | None:
@@ -52,6 +53,16 @@ def get_sync_enabled(db: Session) -> bool:
 
 def set_sync_enabled(db: Session, enabled: bool) -> bool:
     set_setting(db, "sync_enabled", "1" if enabled else "0")
+    return enabled
+
+
+def get_captcha_enabled(db: Session) -> bool:
+    raw = get_setting(db, "captcha_enabled", "1")
+    return str(raw or "1").strip().casefold() not in {"0", "false", "no", "off", "disabled"}
+
+
+def set_captcha_enabled(db: Session, enabled: bool) -> bool:
+    set_setting(db, "captcha_enabled", "1" if enabled else "0")
     return enabled
 
 

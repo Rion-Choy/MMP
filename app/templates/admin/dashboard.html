@@ -8,7 +8,7 @@
   <div class="page-shell wide">
     <header class="site-header">
       <div class="brand"><div class="brand-mark" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h13A2.5 2.5 0 0 1 21 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9Z"/><path d="m4 7 8 6 8-6"/></svg></div><div class="brand-copy"><p class="brand-title">Mail Portal</p><p class="brand-subtitle">邮件归档管理控制台</p></div></div>
-      <div class="header-actions"><nav class="header-nav"><a href="/admin">概览</a><a href="/admin/targets">隐私邮箱</a><a href="/admin/mailbox">母邮箱配置</a></nav><span class="status-chip">在线</span></div>
+      <div class="header-actions"><nav class="header-nav"><a href="/admin">概览</a><a href="/admin/targets">隐私邮箱</a><a href="/admin/settings">管理员设置</a></nav><span class="status-chip">在线</span></div>
     </header>
 
     <main>
@@ -33,7 +33,7 @@
         <article class="glass-panel card"><div class="card-heading"><div><h2>最近一次同步</h2><p>同步任务的最新执行状态</p></div><div class="sync-summary">{% if latest_sync %}<span class="sync-time">最近一次同步时间（北京时间）：{{ (latest_sync.finished_at or latest_sync.started_at)|beijing_time }}</span><span class="status-pill {% if latest_sync.status != 'success' %}off{% endif %}">{{ latest_sync.status }}</span>{% endif %}</div></div>
           {% if latest_sync %}<div class="data-list"><div class="data-row"><span class="data-key">获取数量</span><span class="data-value">{{ latest_sync.fetched_count }}</span></div><div class="data-row"><span class="data-key">新增数量</span><span class="data-value">{{ latest_sync.inserted_count }}</span></div><div class="data-row"><span class="data-key">更新数量</span><span class="data-value">{{ latest_sync.updated_count }}</span></div><div class="data-row"><span class="data-key">重复数量</span><span class="data-value">{{ latest_sync.duplicate_count }}</span></div>{% if latest_sync.error_message %}<div class="data-row"><span class="data-key">错误</span><span class="data-value">{{ latest_sync.error_message }}</span></div>{% endif %}</div>{% else %}<div class="empty-state"><p>还没有同步记录</p><p class="muted">配置母邮箱后可以手动或自动同步。</p></div>{% endif %}
         </article>
-        <article class="glass-panel card"><div class="card-heading"><div><h2>快速入口</h2><p>常用管理操作</p></div></div><div class="form-stack"><a class="btn btn-primary btn-block" href="/admin/targets">维护隐私邮箱</a><a class="btn btn-secondary btn-block" href="/admin/mailbox">配置母邮箱与同步</a></div><div class="notice" style="margin-top:18px;">OAuth refresh token 只保存在服务器配置文件中，管理页面不会回显原文。</div></article>
+        <article class="glass-panel card"><div class="card-heading"><div><h2>快速入口</h2><p>常用管理操作</p></div></div><div class="form-stack"><a class="btn btn-primary btn-block" href="/admin/targets">维护隐私邮箱</a><a class="btn btn-secondary btn-block" href="/admin/settings">管理员设置</a></div><div class="notice" style="margin-top:18px;">OAuth refresh token 只保存在服务器配置文件中，管理页面不会回显原文。</div></article>
       </section>
     </main>
   </div>

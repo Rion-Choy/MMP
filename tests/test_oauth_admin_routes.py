@@ -361,6 +361,42 @@ def test_mailbox_page_separates_sync_settings_from_oauth_configuration(client: T
     assert 'name="sync_interval_seconds"' not in page.text.split('id="oauthForm"', 1)[-1]
 
 
+def test_admin_settings_page_separates_captcha_sync_and_oauth_cards(client: TestClient) -> None:
+    _login(client)
+
+    page = client.get("/admin/settings")
+
+    assert page.status_code == 200
+    assert "管理员设置" in page.text
+    assert "母邮箱与同步" not in page.text
+    assert "验证码设置" in page.text
+    assert 'action="/admin/mailbox/captcha-toggle"' in page.text
+    assert 'id="sync-settings-form"' in page.text
+    assert 'id="oauthForm"' in page.text
+    assert page.text.count("settings-card") >= 3
+
+
+def test_admin_can_toggle_public_captcha_from_settings_page(client: TestClient) -> None:
+    _login(client)
+    csrf = _csrf(client)
+
+    response = client.post(
+        "/admin/mailbox/captcha-toggle",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/settings?captcha=toggled"
+    from app.services.settings_service import get_captcha_enabled
+
+    db = client.app.state.session_factory()
+    try:
+        assert get_captcha_enabled(db) is False
+    finally:
+        db.close()
+
+
 def test_web_authorization_keeps_connected_mailbox_fields_read_only_until_reconfigured(client: TestClient) -> None:
     _login(client)
     save_oauth_config(
