@@ -13,7 +13,7 @@ from typing import Any, Mapping
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import MailFolder, MailMessage, MailRecipient, SyncRun
+from app.models import MailFolder, MailMessage, MailRecipient, MotherMailbox, SyncRun
 from app.services.email_normalization import parse_recipient_list
 
 
@@ -29,6 +29,7 @@ class ParsedMessage:
     recipients: tuple[tuple[str, str], ...]
     folder_id: str | None = None
     folder_name: str | None = None
+    mother_mailbox_id: int | None = None
 
 
 def parse_received_datetime(value: str) -> datetime:
@@ -77,6 +78,7 @@ def parse_graph_message(payload: Mapping[str, Any]) -> ParsedMessage:
         recipients=tuple(dict.fromkeys(recipients)),
         folder_id=payload.get("_folder_id") if isinstance(payload.get("_folder_id"), str) else None,
         folder_name=payload.get("_folder_name") if isinstance(payload.get("_folder_name"), str) else None,
+        mother_mailbox_id=payload.get("_mother_mailbox_id") if isinstance(payload.get("_mother_mailbox_id"), int) else None,
     )
 
 
@@ -144,36 +146,59 @@ def _folder_names_match(configured_name: str, display_name: str) -> bool:
     return False
 
 
-def _initial_folder_cursor(db: Session, folder_name: str) -> tuple[datetime, str]:
+def _initial_folder_cursor(
+    db: Session,
+    folder_name: str,
+    mother_mailbox_id: int | None = None,
+) -> tuple[datetime, str]:
     aliases = next(
         (aliases for aliases in _FOLDER_ALIASES.values() if folder_name.strip().casefold() in aliases),
         {folder_name.strip().casefold()},
     )
-    message = db.scalar(
+    message_query = (
         select(MailMessage)
         .where(func.lower(MailMessage.folder_name).in_(aliases))
         .order_by(MailMessage.received_at.desc(), MailMessage.id.desc())
         .limit(1)
     )
+    if mother_mailbox_id is not None:
+        message_query = message_query.where(MailMessage.mother_mailbox_id == mother_mailbox_id)
+    message = db.scalar(message_query)
     if message is not None:
         return message.received_at, message.immutable_message_id
 
-    latest = db.scalar(select(func.max(MailMessage.received_at)))
+    if mother_mailbox_id is not None:
+        latest = db.scalar(
+            select(func.max(MailMessage.received_at)).where(
+                MailMessage.mother_mailbox_id == mother_mailbox_id
+            )
+        )
+    else:
+        latest = db.scalar(select(func.max(MailMessage.received_at)))
     # A newly selected folder must not cause an unexpected historical backfill.
-    # If there is no local archive at all, start at the current UTC time.
-    return latest or datetime.utcnow(), ""
+    # A mailbox with no local archive starts at the minimum cursor so its first
+    # synchronization can archive current provider mail.
+    return latest or datetime.min, ""
 
 
-def _get_or_create_folder(db: Session, provider_folder: Mapping[str, Any]) -> MailFolder:
+def _get_or_create_folder(
+    db: Session,
+    provider_folder: Mapping[str, Any],
+    mother_mailbox_id: int | None = None,
+) -> MailFolder:
     provider_folder_id = provider_folder.get("id")
     if not isinstance(provider_folder_id, str) or not provider_folder_id:
         raise ValueError("mail folder has no provider id")
     display_name = str(provider_folder.get("displayName") or provider_folder_id)
     now = datetime.utcnow()
-    folder = db.scalar(select(MailFolder).where(MailFolder.provider_folder_id == provider_folder_id))
+    folder_query = select(MailFolder).where(MailFolder.provider_folder_id == provider_folder_id)
+    if mother_mailbox_id is not None:
+        folder_query = folder_query.where(MailFolder.mother_mailbox_id == mother_mailbox_id)
+    folder = db.scalar(folder_query)
     if folder is None:
-        cursor_at, cursor_id = _initial_folder_cursor(db, display_name)
+        cursor_at, cursor_id = _initial_folder_cursor(db, display_name, mother_mailbox_id)
         folder = MailFolder(
+            mother_mailbox_id=mother_mailbox_id,
             provider_folder_id=provider_folder_id,
             folder_name=display_name,
             parent_folder_id=None,
@@ -189,7 +214,9 @@ def _get_or_create_folder(db: Session, provider_folder: Mapping[str, Any]) -> Ma
         folder.is_enabled = True
         folder.last_seen_at = now
         if folder.last_message_received_at is None:
-            folder.last_message_received_at, folder.last_message_id = _initial_folder_cursor(db, display_name)
+            folder.last_message_received_at, folder.last_message_id = _initial_folder_cursor(
+                db, display_name, mother_mailbox_id
+            )
     return folder
 
 
@@ -224,11 +251,15 @@ def upsert_parsed_message(
 ) -> tuple[MailMessage, bool]:
     now = datetime.utcnow()
     message = db.scalar(
-        select(MailMessage).where(MailMessage.immutable_message_id == parsed.immutable_message_id)
+        select(MailMessage).where(
+            MailMessage.immutable_message_id == parsed.immutable_message_id,
+            MailMessage.mother_mailbox_id == parsed.mother_mailbox_id,
+        )
     )
     inserted = message is None
     if message is None:
         message = MailMessage(
+            mother_mailbox_id=parsed.mother_mailbox_id,
             immutable_message_id=parsed.immutable_message_id,
             first_archived_at=now,
             last_seen_at=now,
@@ -273,10 +304,22 @@ def sync_once(
     *,
     folder_names: list[str] | None = None,
     limit: int = SYNC_BATCH_SIZE,
+    mother_mailbox_id: int | None = None,
+    cycle_id: int | None = None,
 ):
     """Fetch the oldest pending messages after each folder's cursor."""
+    if mother_mailbox_id is not None:
+        mailbox = db.get(MotherMailbox, mother_mailbox_id)
+        if mailbox is None:
+            raise ValueError("mother mailbox does not exist")
     started = datetime.utcnow()
-    run = SyncRun(started_at=started, status="running")
+    run = SyncRun(
+        started_at=started,
+        status="running",
+        mother_mailbox_id=mother_mailbox_id,
+        cycle_id=cycle_id,
+        cycle_started_at=started if cycle_id is not None else None,
+    )
     db.add(run)
     db.flush()
     try:
@@ -285,7 +328,7 @@ def sync_once(
         folder_entries: list[tuple[MailFolder, list[dict[str, Any]]]] = []
         provider_folders: dict[str, MailFolder] = {}
         for provider_folder in selected:
-            folder = _get_or_create_folder(db, provider_folder)
+            folder = _get_or_create_folder(db, provider_folder, mother_mailbox_id)
             provider_folders[folder.provider_folder_id] = folder
             candidates: list[dict[str, Any]] = []
             for value in islice(
@@ -297,6 +340,7 @@ def sync_once(
                 candidate = dict(value)
                 candidate["_folder_id"] = folder.provider_folder_id
                 candidate["_folder_name"] = folder.folder_name
+                candidate["_mother_mailbox_id"] = mother_mailbox_id
                 if _is_after_cursor(candidate, folder):
                     candidates.append(candidate)
             folder_entries.append((folder, candidates))
@@ -307,6 +351,16 @@ def sync_once(
         processed_ids = {str(value.get("id")) for value in merged}
         for raw in merged:
             parsed = parse_graph_message(raw)
+            parsed = ParsedMessage(
+                immutable_message_id=parsed.immutable_message_id,
+                internet_message_id=parsed.internet_message_id,
+                received_at=parsed.received_at,
+                body_text=parsed.body_text,
+                recipients=parsed.recipients,
+                folder_id=parsed.folder_id,
+                folder_name=parsed.folder_name,
+                mother_mailbox_id=mother_mailbox_id,
+            )
             folder = provider_folders.get(parsed.folder_id or "")
             _, inserted = upsert_parsed_message(
                 db,

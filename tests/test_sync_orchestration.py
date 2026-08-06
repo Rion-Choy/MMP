@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.models import MailFolder, MailMessage, SyncRun
+from app.models import MailFolder, MailMessage, MotherMailbox, SyncRun
 from app.services.mail_sync import _pending_message_path, _select_provider_folders, sync_once
 
 
@@ -52,6 +52,92 @@ def test_folder_selection_matches_common_localized_graph_names_without_falling_b
     selected = _select_provider_folders(folders, ["Inbox", "Archive"])
 
     assert [folder["id"] for folder in selected] == ["inbox", "archive"]
+
+
+def test_sync_scopes_same_provider_ids_to_different_mailboxes() -> None:
+    from app.database import Base, create_engine_for_tests, make_session_factory
+
+    engine = create_engine_for_tests()
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+    db = factory()
+    first = MotherMailbox(
+        email_address="a@example.com",
+        normalized_email="a@example.com",
+        client_id="client-a",
+        authority="consumers",
+        auth_method="manual",
+        enabled=True,
+    )
+    second = MotherMailbox(
+        email_address="b@example.com",
+        normalized_email="b@example.com",
+        client_id="client-b",
+        authority="consumers",
+        auth_method="manual",
+        enabled=True,
+    )
+    db.add_all([first, second])
+    db.flush()
+    graph = FakeGraph()
+
+    first_run = sync_once(db, graph, mother_mailbox_id=first.id, limit=50)
+    second_run = sync_once(db, graph, mother_mailbox_id=second.id, limit=50)
+
+    assert first_run.inserted_count == 2
+    assert second_run.inserted_count == 2
+    assert db.query(MailMessage).count() == 4
+    assert db.query(MailFolder).count() == 4
+    assert {message.mother_mailbox_id for message in db.query(MailMessage).all()} == {first.id, second.id}
+
+
+def test_each_mailbox_has_its_own_fifty_message_cap() -> None:
+    from app.database import Base, create_engine_for_tests, make_session_factory
+
+    class ManyMessages(FakeGraph):
+        def iter_collection(self, path: str):
+            if "/messages" in path:
+                folder = path.split("/")[3]
+                return iter(
+                    {
+                        "id": f"{folder}-{index}",
+                        "receivedDateTime": f"2026-01-01T12:{index:02d}:00Z",
+                        "body": {"contentType": "text", "content": f"body-{folder}-{index}"},
+                        "toRecipients": [{"emailAddress": {"address": "private@example.com"}}],
+                        "ccRecipients": [],
+                    }
+                    for index in range(80)
+                )
+            return super().iter_collection(path)
+
+    engine = create_engine_for_tests()
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+    db = factory()
+    first = MotherMailbox(
+        email_address="a@example.com",
+        normalized_email="a@example.com",
+        client_id="client-a",
+        authority="consumers",
+        auth_method="manual",
+        enabled=True,
+    )
+    second = MotherMailbox(
+        email_address="b@example.com",
+        normalized_email="b@example.com",
+        client_id="client-b",
+        authority="consumers",
+        auth_method="manual",
+        enabled=True,
+    )
+    db.add_all([first, second])
+    db.flush()
+    first_run = sync_once(db, ManyMessages(), mother_mailbox_id=first.id, limit=50)
+    second_run = sync_once(db, ManyMessages(), mother_mailbox_id=second.id, limit=50)
+
+    assert first_run.unique_count == 50
+    assert second_run.unique_count == 50
+    assert db.query(MailMessage).count() == 100
 
 
 def _seed_folder_cursors(db) -> None:

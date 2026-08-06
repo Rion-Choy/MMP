@@ -33,11 +33,13 @@ def create_transaction(
     payload: dict[str, Any],
     secret: str,
     state: str | None = None,
+    mother_mailbox_id: int | None = None,
     now: datetime | None = None,
 ) -> OAuthTransaction:
     current = now or datetime.utcnow()
     transaction = OAuthTransaction(
         transaction_id=str(uuid4()),
+        mother_mailbox_id=mother_mailbox_id,
         state_hash=session_id_hash(state) if state else None,
         flow_type=flow_type,
         payload_encrypted=encrypt_secret_text(secret, json.dumps(payload, separators=(",", ":"))),

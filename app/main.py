@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from pathlib import Path
 
-from app.config import database_url, instance_secrets_path, microsoft_oauth_path
+from app.config import database_url, instance_secrets_path, microsoft_oauth_path, oauth_config_path
 from app.database import Base, create_engine_for_url, ensure_database_parent, make_session_factory
 from app.models import AppSetting  # noqa: F401 - register models
 from app.routes.public import router as public_router
@@ -29,6 +29,7 @@ def create_app(*, testing: bool = False, database_url_override: str | None = Non
     app.state.testing = testing
     app.state.instance_secrets_path = instance_secrets_path()
     app.state.microsoft_oauth_path = microsoft_oauth_path()
+    app.state.oauth_config_dir = app.state.microsoft_oauth_path.parent / "microsoft-oauth"
     app.state.oauth_redirect_uri = os.environ.get(
         "MAIL_PORTAL_OAUTH_REDIRECT_URI",
         "http://localhost:8000/admin/oauth/callback",

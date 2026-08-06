@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from app.config import ADMIN_CSRF_COOKIE, ADMIN_SESSION_COOKIE, ADMIN_SESSION_TTL_SECONDS, sync_lock_path
 from app.dependencies import require_admin
-from app.models import AppSetting, MailMessage, MailRecipient, PrivateTarget, SyncRun
+from app.models import AppSetting, MailMessage, MailRecipient, MotherMailbox, PrivateTarget, SyncCycle, SyncRun, SyncTrigger
 from app.services.admin_session import authenticate_admin
 from app.services.csrf import new_csrf_token, validate_csrf
 from app.services.email_normalization import normalize_email_address
@@ -38,7 +38,7 @@ from app.services.oauth_transactions import (
     get_transaction,
     get_transaction_by_state,
 )
-from app.services.graph_factory import build_graph_client
+from app.services.graph_factory import build_graph_client_for_mailbox
 from app.worker import FileSyncLock, SyncWorker
 from app.services.settings_service import (
     MAX_SYNC_INTERVAL_SECONDS,
@@ -155,6 +155,30 @@ def get_settings(request: Request) -> dict[str, str]:
         db.close()
 
 
+def _mailbox_records(request: Request) -> list[MotherMailbox]:
+    db = request.app.state.session_factory()
+    try:
+        return list(
+            db.scalars(
+                select(MotherMailbox).order_by(MotherMailbox.id.asc())
+            )
+        )
+    finally:
+        db.close()
+
+
+def _legacy_mailbox(request: Request, db) -> MotherMailbox | None:
+    mailbox = db.scalar(select(MotherMailbox).order_by(MotherMailbox.id.asc()).limit(1))
+    return mailbox
+
+
+def _oauth_path_for_mailbox(request: Request, mailbox_id: int | None):
+    if mailbox_id is None:
+        return request.app.state.microsoft_oauth_path
+    from app.config import oauth_config_path
+    return oauth_config_path(mailbox_id)
+
+
 def _sync_context(request: Request) -> dict[str, object]:
     db = request.app.state.session_factory()
     try:
@@ -220,7 +244,7 @@ def sync_now(request: Request, csrf_token: str = Form(...)) -> Response:
     url = database_url()
     ensure_database_parent(url)
     engine = create_engine_for_url(url)
-    worker = SyncWorker(make_session_factory(engine), build_graph_client, lock=FileSyncLock(sync_lock_path()))
+    worker = SyncWorker(make_session_factory(engine), build_graph_client_for_mailbox, lock=FileSyncLock(sync_lock_path()))
     try:
         result = worker.run_once()
     except Exception:
@@ -453,8 +477,15 @@ def delete_target_route(request: Request, target_id: int, csrf_token: str = Form
 
 @router.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 @router.get("/mailbox", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
-def mailbox_page(request: Request, edit: int = Query(default=0)) -> Response:
-    path = request.app.state.microsoft_oauth_path
+def mailbox_page(request: Request, edit: int = Query(default=0), mailbox_id: int | None = Query(default=None)) -> Response:
+    db = request.app.state.session_factory()
+    try:
+        mailbox = db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db)
+        if mailbox is None:
+            mailbox = None
+    finally:
+        db.close()
+    path = _oauth_path_for_mailbox(request, mailbox.id if mailbox else None)
     if path.exists():
         config = load_oauth_config(path)
         config["refresh_token_configured"] = bool(config.get("refresh_token"))
@@ -469,6 +500,8 @@ def mailbox_page(request: Request, edit: int = Query(default=0)) -> Response:
     context = {
         "config": config,
         **sync,
+        "mailbox": mailbox,
+        "mailboxes": _mailbox_records(request),
         "fields_read_only": fields_read_only,
         "can_edit_oauth": fields_read_only,
         "error": request.query_params.get("error"),
@@ -478,6 +511,84 @@ def mailbox_page(request: Request, edit: int = Query(default=0)) -> Response:
     }
     response = templates.TemplateResponse(request, "admin/settings.html", context)
     return set_csrf_cookie(request, no_store(response), token)
+
+
+@router.get("/mailboxes", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+def mailboxes_page(request: Request) -> Response:
+    token = csrf_context(request)["csrf_token"]
+    response = templates.TemplateResponse(
+        request,
+        "admin/mailboxes.html",
+        {"mailboxes": _mailbox_records(request), "csrf_token": token},
+    )
+    return set_csrf_cookie(request, no_store(response), token)
+
+
+@router.post("/mailboxes", dependencies=[Depends(require_admin)])
+def create_mailbox(
+    request: Request,
+    mailbox_address: str = Form(...),
+    client_id: str = Form(...),
+    authority: str = Form("consumers"),
+    csrf_token: str = Form(...),
+) -> Response:
+    validate_csrf(request, csrf_token)
+    normalized = normalize_email_address(mailbox_address)
+    db = request.app.state.session_factory()
+    try:
+        if db.scalar(select(MotherMailbox).where(MotherMailbox.normalized_email == normalized)) is not None:
+            return no_store(RedirectResponse("/admin/mailboxes?error=duplicate", status_code=303))
+        mailbox = MotherMailbox(
+            email_address=normalized,
+            normalized_email=normalized,
+            client_id=client_id.strip(),
+            authority=authority.strip() or "consumers",
+            auth_method="manual",
+            enabled=False,
+        )
+        db.add(mailbox)
+        db.commit()
+        db.refresh(mailbox)
+        from app.services.microsoft_oauth import save_oauth_config
+        path = _oauth_path_for_mailbox(request, mailbox.id)
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        return no_store(RedirectResponse(f"/admin/mailbox?mailbox_id={mailbox.id}&edit=1", status_code=303))
+    except ValueError:
+        db.rollback()
+        return no_store(RedirectResponse("/admin/mailboxes?error=invalid", status_code=303))
+    finally:
+        db.close()
+
+
+@router.post("/mailboxes/{mailbox_id}/enable", dependencies=[Depends(require_admin)])
+def enable_mailbox(request: Request, mailbox_id: int, csrf_token: str = Form(...)) -> Response:
+    validate_csrf(request, csrf_token)
+    db = request.app.state.session_factory()
+    try:
+        mailbox = db.get(MotherMailbox, mailbox_id)
+        if mailbox is None:
+            raise HTTPException(status_code=404, detail="mailbox not found")
+        mailbox.enabled = True
+        db.commit()
+        return no_store(RedirectResponse("/admin/mailboxes", status_code=303))
+    finally:
+        db.close()
+
+
+@router.post("/mailboxes/{mailbox_id}/disable", dependencies=[Depends(require_admin)])
+def disable_mailbox(request: Request, mailbox_id: int, csrf_token: str = Form(...)) -> Response:
+    validate_csrf(request, csrf_token)
+    db = request.app.state.session_factory()
+    try:
+        mailbox = db.get(MotherMailbox, mailbox_id)
+        if mailbox is None:
+            raise HTTPException(status_code=404, detail="mailbox not found")
+        mailbox.enabled = False
+        db.commit()
+        return no_store(RedirectResponse("/admin/mailboxes", status_code=303))
+    finally:
+        db.close()
 
 
 @router.post("/mailbox/sync-settings", dependencies=[Depends(require_admin)])
@@ -539,11 +650,19 @@ def save_mailbox(
     oauth_mode: str = Form("manual"),
     csrf_token: str = Form(...),
     edit: int = Query(default=0),
+    mailbox_id: int | None = Form(default=None),
 ) -> Response:
     validate_csrf(request, csrf_token)
+    db = request.app.state.session_factory()
+    try:
+        mailbox = db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db)
+        if mailbox is None:
+            mailbox = None
+    finally:
+        db.close()
     try:
         normalized = normalize_email_address(mailbox_address)
-        path = request.app.state.microsoft_oauth_path
+        path = _oauth_path_for_mailbox(request, mailbox.id if mailbox else None)
         existing = load_oauth_config(path) if path.exists() else {}
         candidate_identity = {
             "mailbox_address": normalized,
@@ -588,6 +707,36 @@ def _oauth_secret(request: Request) -> str:
     return str(instance["cookie_secret"])
 
 
+def _ensure_mailbox_identity(request: Request, mailbox_id: int | None, identity: dict[str, str], *, enabled: bool | None = None) -> MotherMailbox:
+    db = request.app.state.session_factory()
+    try:
+        mailbox = db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db)
+        if mailbox is None:
+            mailbox = None
+        if mailbox is None:
+            mailbox = MotherMailbox(
+                email_address=identity["mailbox_address"],
+                normalized_email=identity["mailbox_address"],
+                client_id=identity["client_id"],
+                authority=identity["authority"],
+                auth_method="manual",
+                enabled=bool(enabled),
+            )
+            db.add(mailbox)
+        else:
+            mailbox.email_address = identity["mailbox_address"]
+            mailbox.normalized_email = identity["mailbox_address"]
+            mailbox.client_id = identity["client_id"]
+            mailbox.authority = identity["authority"]
+            if enabled is not None:
+                mailbox.enabled = enabled
+        db.commit()
+        db.refresh(mailbox)
+        return mailbox
+    finally:
+        db.close()
+
+
 def _mailbox_candidate(mailbox_address: str, client_id: str, authority: str) -> dict[str, str]:
     normalized = normalize_email_address(mailbox_address)
     client = client_id.strip()
@@ -600,8 +749,8 @@ def _mailbox_candidate(mailbox_address: str, client_id: str, authority: str) -> 
     }
 
 
-def _existing_oauth_identity(request: Request) -> tuple[dict[str, str], str, bool]:
-    path = request.app.state.microsoft_oauth_path
+def _existing_oauth_identity(request: Request, mailbox_id: int | None = None) -> tuple[dict[str, str], str, bool]:
+    path = _oauth_path_for_mailbox(request, mailbox_id)
     existing = load_oauth_config(path) if path.exists() else {}
     identity = {
         "mailbox_address": str(existing.get("mailbox_address") or "").strip().casefold(),
@@ -611,8 +760,14 @@ def _existing_oauth_identity(request: Request) -> tuple[dict[str, str], str, boo
     return identity, str(existing.get("auth_method") or "manual"), bool(existing.get("refresh_token"))
 
 
-def _validate_new_oauth_identity(request: Request, candidate: dict[str, str], *, edit: bool = False) -> None:
-    existing, auth_method, connected = _existing_oauth_identity(request)
+def _validate_new_oauth_identity(
+    request: Request,
+    candidate: dict[str, str],
+    *,
+    edit: bool = False,
+    mailbox_id: int | None = None,
+) -> None:
+    existing, auth_method, connected = _existing_oauth_identity(request, mailbox_id)
     if connected and auth_method in {"web", "device"} and not edit:
         raise ValueError("当前通过授权流程已连接，母邮箱信息和授权方式为只读；请先点击“重新配置授权”")
     if connected and auth_method == "manual" and candidate != existing and not edit:
@@ -629,6 +784,7 @@ def _mailbox_error_page(
     captcha_enabled: bool,
     error: str,
     csrf_token: str,
+    mailbox: MotherMailbox | None = None,
 ) -> Response:
     return set_csrf_cookie(
         request,
@@ -646,8 +802,8 @@ def _mailbox_error_page(
                     "can_edit_oauth": False,
                     "error": error,
                     "csrf_token": csrf_token,
-                    "authorization_url": None,
                     "device_authorization": None,
+                    "mailbox": mailbox,
                 },
                 status_code=400,
             )
@@ -656,7 +812,14 @@ def _mailbox_error_page(
     )
 
 
-def _persist_oauth_result(request: Request, *, payload: dict, tokens: dict, auth_method: str) -> None:
+def _persist_oauth_result(
+    request: Request,
+    *,
+    payload: dict,
+    tokens: dict,
+    auth_method: str,
+    mailbox_id: int | None = None,
+) -> None:
     validate_access_token_for_mailbox(
         access_token=str(tokens.get("access_token") or ""),
         mailbox_address=payload["mailbox_address"],
@@ -668,7 +831,23 @@ def _persist_oauth_result(request: Request, *, payload: dict, tokens: dict, auth
         token_payload=tokens,
         auth_method=auth_method,
     )
-    save_oauth_config(request.app.state.microsoft_oauth_path, config)
+    save_oauth_config(_oauth_path_for_mailbox(request, mailbox_id), config)
+    if payload.get("legacy_compat"):
+        save_oauth_config(request.app.state.microsoft_oauth_path, config)
+    if mailbox_id is not None:
+        db = request.app.state.session_factory()
+        try:
+            mailbox = db.get(MotherMailbox, mailbox_id)
+            if mailbox is not None:
+                mailbox.email_address = config["mailbox_address"]
+                mailbox.normalized_email = normalize_email_address(config["mailbox_address"])
+                mailbox.client_id = config["client_id"]
+                mailbox.authority = config["authority"]
+                mailbox.auth_method = auth_method
+                mailbox.enabled = True
+                db.commit()
+        finally:
+            db.close()
 
 
 @router.post("/oauth/web/start", name="oauth_web_start", dependencies=[Depends(require_admin)])
@@ -679,11 +858,16 @@ def oauth_web_start(
     authority: str = Form("consumers"),
     csrf_token: str = Form(...),
     edit: int = Query(default=0),
+    mailbox_id: int | None = Form(default=None),
 ) -> Response:
     validate_csrf(request, csrf_token)
+    mailbox = None
     try:
         candidate = _mailbox_candidate(mailbox_address, client_id, authority)
-        _validate_new_oauth_identity(request, candidate, edit=bool(edit))
+        legacy_compat = mailbox_id is None
+        _validate_new_oauth_identity(request, candidate, edit=bool(edit), mailbox_id=mailbox_id)
+        mailbox = _ensure_mailbox_identity(request, mailbox_id, candidate, enabled=False)
+        mailbox_id = mailbox.id
         verifier, challenge = generate_pkce_pair()
         state = uuid4().hex + uuid4().hex
         db = request.app.state.session_factory()
@@ -693,9 +877,12 @@ def oauth_web_start(
                 flow_type="web",
                 state=state,
                 secret=_oauth_secret(request),
+                mother_mailbox_id=mailbox_id,
                 payload={
                     **candidate,
                     "code_verifier": verifier,
+                    "mother_mailbox_id": mailbox_id,
+                    "legacy_compat": legacy_compat,
                 },
             )
             db.commit()
@@ -720,6 +907,8 @@ def oauth_web_start(
                 "csrf_token": csrf_token,
                 "authorization_url": url,
                 "device_authorization": None,
+                "mailbox": mailbox,
+                "mailboxes": _mailbox_records(request),
             },
         )
         response.set_cookie(
@@ -742,6 +931,7 @@ def oauth_web_start(
             captcha_enabled=bool(sync["captcha_enabled"]),
             error=str(exc),
             csrf_token=csrf_token,
+            mailbox=mailbox,
         )
 
 
@@ -759,6 +949,9 @@ def oauth_callback(request: Request, code: str = "", state: str = "", error: str
         if transaction is None:
             raise HTTPException(status_code=400, detail="OAuth 授权请求不存在、已过期或已使用")
         payload = decode_transaction_payload(transaction, _oauth_secret(request))
+        if payload.get("mother_mailbox_id") is None:
+            payload["legacy_compat"] = True
+        mailbox_id: int | None = payload.get("mother_mailbox_id")
         tokens = exchange_authorization_code(
             client_id=payload["client_id"],
             authority=payload["authority"],
@@ -766,7 +959,7 @@ def oauth_callback(request: Request, code: str = "", state: str = "", error: str
             code_verifier=payload["code_verifier"],
             redirect_uri=_oauth_redirect_uri(request),
         )
-        _persist_oauth_result(request, payload=payload, tokens=tokens, auth_method="web")
+        _persist_oauth_result(request, payload=payload, tokens=tokens, auth_method="web", mailbox_id=payload.get("mother_mailbox_id"))
         consume_transaction(db, transaction)
         db.commit()
     except HTTPException:
@@ -790,11 +983,16 @@ def oauth_device_start(
     authority: str = Form("consumers"),
     csrf_token: str = Form(...),
     edit: int = Query(default=0),
+    mailbox_id: int | None = Form(default=None),
 ) -> Response:
     validate_csrf(request, csrf_token)
+    mailbox = None
     try:
         candidate = _mailbox_candidate(mailbox_address, client_id, authority)
-        _validate_new_oauth_identity(request, candidate, edit=bool(edit))
+        legacy_compat = mailbox_id is None
+        _validate_new_oauth_identity(request, candidate, edit=bool(edit), mailbox_id=mailbox_id)
+        mailbox = _ensure_mailbox_identity(request, mailbox_id, candidate, enabled=False)
+        mailbox_id = mailbox.id
         device = request_device_code(client_id=candidate["client_id"], authority=candidate["authority"])
         db = request.app.state.session_factory()
         try:
@@ -802,6 +1000,7 @@ def oauth_device_start(
                 db,
                 flow_type="device",
                 secret=_oauth_secret(request),
+                mother_mailbox_id=mailbox_id,
                 payload={
                     **candidate,
                     "device_code": device["device_code"],
@@ -809,6 +1008,8 @@ def oauth_device_start(
                     "verification_uri": device["verification_uri"],
                     "message": device.get("message", ""),
                     "interval": device.get("interval", 5),
+                    "mother_mailbox_id": mailbox_id,
+                    "legacy_compat": legacy_compat,
                 },
             )
             db.commit()
@@ -833,6 +1034,8 @@ def oauth_device_start(
                     "verification_uri": device["verification_uri"],
                     "message": device.get("message", ""),
                 },
+                "mailbox": mailbox,
+                "mailboxes": _mailbox_records(request),
             },
         )
         return set_csrf_cookie(request, no_store(response), token)
@@ -847,6 +1050,7 @@ def oauth_device_start(
             captcha_enabled=bool(sync["captcha_enabled"]),
             error=str(exc),
             csrf_token=csrf_token,
+            mailbox=mailbox,
         )
 
 
@@ -859,12 +1063,15 @@ def oauth_device_confirm(request: Request, transaction_id: str = Form(...), csrf
         if transaction is None:
             raise HTTPException(status_code=400, detail="Device Code 授权请求不存在、已过期或已完成")
         payload = decode_transaction_payload(transaction, _oauth_secret(request))
+        if payload.get("mother_mailbox_id") is None:
+            payload["legacy_compat"] = True
+        mailbox_id: int | None = payload.get("mother_mailbox_id")
         tokens = poll_device_code(
             client_id=payload["client_id"],
             authority=payload["authority"],
             device_code=payload["device_code"],
         )
-        _persist_oauth_result(request, payload=payload, tokens=tokens, auth_method="device")
+        _persist_oauth_result(request, payload=payload, tokens=tokens, auth_method="device", mailbox_id=payload.get("mother_mailbox_id"))
         consume_transaction(db, transaction)
         db.commit()
     except HTTPException:
@@ -875,6 +1082,13 @@ def oauth_device_confirm(request: Request, transaction_id: str = Form(...), csrf
         if exc.__class__.__name__ in {"DeviceAuthorizationPending", "DeviceAuthorizationSlowDown"}:
             token = csrf_context(request)["csrf_token"]
             sync = _sync_context(request)
+            mailbox = None
+            if mailbox_id is not None:
+                lookup = request.app.state.session_factory()
+                try:
+                    mailbox = lookup.get(MotherMailbox, mailbox_id)
+                finally:
+                    lookup.close()
             response = templates.TemplateResponse(
                 request,
                 "admin/settings.html",
@@ -893,6 +1107,8 @@ def oauth_device_confirm(request: Request, transaction_id: str = Form(...), csrf
                         "verification_uri": payload.get("verification_uri", "https://microsoft.com/devicelogin"),
                         "message": payload.get("message", ""),
                     },
+                    "mailbox": mailbox,
+                    "mailboxes": _mailbox_records(request),
                 },
                 status_code=409,
             )

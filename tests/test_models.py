@@ -7,5 +7,5 @@ def test_database_tables_are_created() -> None:
     Base.metadata.create_all(engine)
     table_names = set(Base.metadata.tables)
 
-    assert {"private_targets", "mail_messages", "mail_recipients", "public_sessions", "app_settings"} <= table_names
+    assert {"private_targets", "mail_messages", "mail_recipients", "public_sessions", "app_settings", "mother_mailboxes", "sync_triggers", "sync_cycles"} <= table_names
     assert "note" in {column.name for column in PrivateTarget.__table__.columns}

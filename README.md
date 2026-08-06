@@ -7,7 +7,10 @@ The project is intended for controlled deployments where mailbox data, OAuth cre
 ## Features
 
 - Microsoft Outlook / Microsoft Graph synchronization.
+- Multiple managed mother mailboxes in one shared archive.
+- Per-mailbox OAuth configuration, Graph client, folder cursor, message identity, and sync records.
 - Web, Device Code, and manual refresh-token OAuth configuration modes.
+- Fixed-time synchronization triggers with non-blocking busy-trigger skips and no catch-up runs.
 - Incremental synchronization with a per-folder cursor.
 - Deduplication using immutable Microsoft message IDs.
 - HTML-to-text message conversion and recipient normalization.
@@ -110,7 +113,11 @@ Useful local URLs:
 - Administrator login: `http://127.0.0.1:8000/admin/login`
 - Administrator dashboard: `http://127.0.0.1:8000/admin`
 
-After signing in, configure the Microsoft mailbox from **Administrator Settings**. The application validates the authorized Microsoft account against the configured mailbox address before saving OAuth results.
+After signing in, open **Mother Mailboxes** (`/admin/mailboxes`) to add, authorize, enable, or disable source mailboxes. Each mailbox is isolated by internal ID for OAuth storage, Graph client caching, folder cursors, provider message IDs, and synchronization records. Disabling a mailbox preserves its archive and only excludes it from later scheduled cycles.
+
+The existing **Administrator Settings** page remains available at `/admin/settings` and `/admin/mailbox`. Synchronization interval, selected folders, and the global schedule toggle remain separate from mailbox OAuth identity. Legacy forms without a mailbox ID resolve to the migrated historical mailbox for compatibility.
+
+For each started cycle, enabled mailboxes are processed in stable ascending ID order. A skipped fixed trigger creates a `SyncTrigger` record but no `SyncCycle` or mailbox-level `SyncRun` records. A started cycle always finishes its mailbox snapshot; later trigger points never cancel or shorten it.
 
 ## Configuration
 
@@ -121,7 +128,7 @@ Configuration is supplied through environment variables so deployment-specific v
 | `MAIL_PORTAL_DATA_DIR` | Runtime root containing data, secrets, and backups | `<project>/runtime` |
 | `MAIL_PORTAL_DATABASE_URL` | Optional SQLAlchemy database URL override | SQLite under `MAIL_PORTAL_DATA_DIR/data/` |
 | `MAIL_PORTAL_INSTANCE_SECRETS` | Instance secret file path | `<data-dir>/secrets/instance-secrets.json` |
-| `MAIL_PORTAL_MICROSOFT_OAUTH` | Microsoft OAuth configuration path | `<data-dir>/secrets/microsoft-oauth.json` |
+| `MAIL_PORTAL_MICROSOFT_OAUTH` | Legacy/default Microsoft OAuth configuration path used for compatibility | `<data-dir>/secrets/microsoft-oauth.json` |
 | `MAIL_PORTAL_HOST` | Application bind address | `127.0.0.1` |
 | `MAIL_PORTAL_PORT` | Application bind port | `8000` |
 | `MAIL_PORTAL_OAUTH_REDIRECT_URI` | OAuth callback URL | `http://localhost:8000/admin/oauth/callback` |
@@ -132,6 +139,8 @@ Configuration is supplied through environment variables so deployment-specific v
 The application also supports optional cookie-name overrides. These should only be changed when there is a clear deployment requirement, and administrator cookies must remain separate from public mailbox session cookies.
 
 ## Synchronization
+
+The default legacy OAuth path remains supported for existing single-mailbox deployments. After a multi-mailbox migration, new or migrated source mailboxes use the restricted, ID-derived path `<data-dir>/secrets/microsoft-oauth/<mother_mailbox_id>.json`. Do not place refresh tokens, client secrets, instance secrets, or absolute production paths in the repository.
 
 The background worker reads the persisted synchronization settings and uses Microsoft Graph to process selected folders incrementally.
 
@@ -144,11 +153,15 @@ Synchronization behavior:
 
 - Each provider folder has its own timestamp-and-message-ID cursor.
 - The cursor boundary is inclusive, with local ID comparison to avoid missing messages that share a timestamp.
-- A synchronization round processes at most 50 messages across the selected folders.
-- Messages are deduplicated by immutable message ID.
-- Folder names support common localized aliases such as Inbox, Archive, Junk, Sent, Deleted, and Drafts.
-- A file lock prevents overlapping worker and manual synchronization runs.
-- When scheduled synchronization is disabled, the worker does not construct a Graph client or perform network work.
+- A synchronization round processes at most 50 messages **per enabled mother mailbox**; with A/B/C enabled, the round can process up to 150 messages.
+- Each started cycle snapshots enabled mother mailboxes in stable `id ASC` order and processes them serially.
+- A mother-mailbox failure is recorded independently and does not prevent later mailboxes in the same cycle from running.
+- Fixed trigger points are independent of cycle duration. A busy trigger is recorded as skipped immediately; it is not queued, compensated, or used to cancel the running cycle.
+- The first trigger runs at startup (`T=0`); later trigger points continue on the theoretical fixed timeline.
+- Web manual sync and scheduled cycles share a non-blocking cross-process file lock.
+- Each source mailbox uses an ID-derived OAuth file under `secrets/microsoft-oauth/<id>.json`; refresh tokens are not stored in SQLite.
+
+For an existing single-mailbox runtime, an incremental Alembic migration creates the source mailbox and cycle records while preserving archived messages, recipients, folders, cursors, OAuth transactions, and historical sync results. Before applying a migration, back up the SQLite database together with its WAL/SHM files, run the migration with the same runtime directory as the services, and verify revision, row counts, integrity, foreign keys, and schema drift. Keep OAuth refresh tokens in restricted per-mailbox files; they are never written to SQLite or source control.
 
 The one-shot helper is available for controlled maintenance operations:
 
@@ -159,13 +172,14 @@ uv run python scripts/sync_once.py --help
 ## Administrator Workflow
 
 1. Sign in at `/admin/login`.
-2. Open `/admin/settings`.
-3. Configure Microsoft OAuth and verify the mailbox connection.
-4. Choose the synchronization interval and folders.
+2. Open `/admin/mailboxes` to add and manage mother mailboxes.
+3. Open `/admin/settings` to configure global synchronization interval, folders, and schedule settings.
+4. Authorize each mother mailbox using Web, Device Code, or manual refresh-token mode.
 5. Create or import private target addresses under `/admin/targets`.
 6. Share only the generated public access link for the intended target.
 7. Review synchronized messages from `/admin/messages`.
-8. Disable or delete a target when its public access link should no longer work.
+8. Disable a mother mailbox to exclude it from future cycles without deleting its archive.
+9. Disable or delete a target when its public access link should no longer work.
 
 Public mailbox pages use the following route shape:
 
@@ -232,7 +246,8 @@ Treat the runtime directory as user data:
 - Back up the SQLite database before migrations or maintenance.
 - Keep SQLite WAL and SHM files together with the database during backup and restore operations.
 - Run migrations with the same runtime directory and service identity used by the application.
-- Verify `PRAGMA integrity_check` and the Alembic revision after a migration.
+- Verify `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and the Alembic revision after a migration.
+- Run `alembic check` after upgrading a representative database to confirm there is no schema drift.
 - Do not reset or recreate the production database to solve schema problems.
 - Do not delete public sessions, synchronization state, OAuth transactions, or message records unless the operation is intentional and understood.
 

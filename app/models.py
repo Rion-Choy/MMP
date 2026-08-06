@@ -13,6 +13,60 @@ def utcnow() -> datetime:
     return datetime.utcnow()
 
 
+class MotherMailbox(Base):
+    __tablename__ = "mother_mailboxes"
+    __table_args__ = (
+        UniqueConstraint("normalized_email", name="uq_mother_mailboxes_normalized_email"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email_address: Mapped[str] = mapped_column(String(320), nullable=False)
+    normalized_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    client_id: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    authority: Mapped[str] = mapped_column(String(255), nullable=False, default="consumers")
+    auth_method: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_sync_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    last_sync_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    folders: Mapped[list["MailFolder"]] = relationship(back_populates="mother_mailbox")
+    messages: Mapped[list["MailMessage"]] = relationship(back_populates="mother_mailbox")
+    sync_runs: Mapped[list["SyncRun"]] = relationship(back_populates="mother_mailbox")
+    oauth_transactions: Mapped[list["OAuthTransaction"]] = relationship(back_populates="mother_mailbox")
+
+
+class SyncTrigger(Base):
+    __tablename__ = "sync_triggers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    skip_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    trigger_source: Mapped[str] = mapped_column(String(16), nullable=False, default="scheduled")
+
+    cycle: Mapped[Optional["SyncCycle"]] = relationship(back_populates="trigger", uselist=False)
+
+
+class SyncCycle(Base):
+    __tablename__ = "sync_cycles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trigger_id: Mapped[int] = mapped_column(ForeignKey("sync_triggers.id"), nullable=False, unique=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    mailbox_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_mailbox_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_mailbox_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    trigger: Mapped[SyncTrigger] = relationship(back_populates="cycle")
+    sync_runs: Mapped[list["SyncRun"]] = relationship(back_populates="cycle")
+
+
 class PrivateTarget(Base):
     __tablename__ = "private_targets"
 
@@ -30,9 +84,16 @@ class PrivateTarget(Base):
 
 class MailMessage(Base):
     __tablename__ = "mail_messages"
+    __table_args__ = (
+        UniqueConstraint("mother_mailbox_id", "immutable_message_id", name="uq_mail_messages_mailbox_immutable"),
+        Index("ix_mail_messages_mother_mailbox_id", "mother_mailbox_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    immutable_message_id: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    mother_mailbox_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("mother_mailboxes.id"), nullable=True
+    )
+    immutable_message_id: Mapped[str] = mapped_column(String(512), nullable=False)
     internet_message_id: Mapped[Optional[str]] = mapped_column(String(998), nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -42,6 +103,7 @@ class MailMessage(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     body_fetch_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    mother_mailbox: Mapped[Optional[MotherMailbox]] = relationship(back_populates="messages")
     recipients: Mapped[list["MailRecipient"]] = relationship(
         back_populates="message", cascade="all, delete-orphan"
     )
@@ -82,9 +144,16 @@ class PublicSession(Base):
 
 class MailFolder(Base):
     __tablename__ = "mail_folders"
+    __table_args__ = (
+        UniqueConstraint("mother_mailbox_id", "provider_folder_id", name="uq_mail_folders_mailbox_provider"),
+        Index("ix_mail_folders_mother_mailbox_id", "mother_mailbox_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    provider_folder_id: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    mother_mailbox_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("mother_mailboxes.id"), nullable=True
+    )
+    provider_folder_id: Mapped[str] = mapped_column(String(512), nullable=False)
     folder_name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent_folder_id: Mapped[Optional[int]] = mapped_column(ForeignKey("mail_folders.id"), nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -92,13 +161,23 @@ class MailFolder(Base):
     last_message_received_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     last_message_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
+    mother_mailbox: Mapped[Optional[MotherMailbox]] = relationship(back_populates="folders")
     messages: Mapped[list[MailMessage]] = relationship(back_populates="folder")
 
 
 class SyncRun(Base):
     __tablename__ = "sync_runs"
+    __table_args__ = (
+        Index("ix_sync_runs_mailbox_cycle_started", "mother_mailbox_id", "cycle_started_at", "started_at"),
+        Index("uq_sync_runs_cycle_mailbox", "cycle_id", "mother_mailbox_id", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mother_mailbox_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("mother_mailboxes.id"), nullable=True
+    )
+    cycle_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sync_cycles.id"), nullable=True, index=True)
+    cycle_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -108,6 +187,9 @@ class SyncRun(Base):
     updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    mother_mailbox: Mapped[Optional[MotherMailbox]] = relationship(back_populates="sync_runs")
+    cycle: Mapped[Optional[SyncCycle]] = relationship(back_populates="sync_runs")
 
 
 class AppSetting(Base):
@@ -120,9 +202,15 @@ class AppSetting(Base):
 
 class OAuthTransaction(Base):
     __tablename__ = "oauth_transactions"
-    __table_args__ = (UniqueConstraint("transaction_id"),)
+    __table_args__ = (
+        UniqueConstraint("transaction_id"),
+        Index("ix_oauth_transactions_mother_mailbox_id", "mother_mailbox_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mother_mailbox_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("mother_mailboxes.id"), nullable=True
+    )
     transaction_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     state_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     flow_type: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -130,3 +218,5 @@ class OAuthTransaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    mother_mailbox: Mapped[Optional[MotherMailbox]] = relationship(back_populates="oauth_transactions")

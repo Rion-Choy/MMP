@@ -38,6 +38,10 @@ def microsoft_oauth_path() -> Path:
             str(data_dir() / "secrets" / "microsoft-oauth.json"),
         )
     )
+def oauth_config_path(mother_mailbox_id: int) -> Path:
+    return data_dir() / "secrets" / "microsoft-oauth" / f"{mother_mailbox_id}.json"
+
+
 def sync_lock_path() -> Path:
     return data_dir() / "sync.lock"
 
