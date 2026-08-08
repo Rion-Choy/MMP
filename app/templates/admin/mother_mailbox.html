@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><link rel="stylesheet" href="/static/style.css?v=20260802-theme"><title>母邮箱配置 · Mail Portal</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><link rel="stylesheet" href="/static/style.css?v=20260807-mother-mailbox"><title>母邮箱维护 · Mail Portal</title>
 <style>
   .oauth-panel { display: none; }
   #oauthForm:has(input[value="web"]:checked) #webPanel,
@@ -15,9 +15,9 @@
 </head>
 <body>
   <div class="page-shell wide">
-    <header class="site-header"><div class="brand"><div class="brand-mark" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 5 8-5"/></svg></div><div class="brand-copy"><p class="brand-title">母邮箱配置</p><p class="brand-subtitle">Microsoft Graph 同步设置</p></div></div><div class="header-actions"><nav class="header-nav"><a href="/admin">概览</a><a href="/admin/targets">隐私邮箱</a></nav><span class="status-chip">配置模式</span></div></header>
+    <header class="site-header"><div class="brand"><div class="brand-mark" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 5 8-5"/></svg></div><div class="brand-copy"><p class="brand-title">母邮箱维护</p><p class="brand-subtitle">Microsoft Graph 授权配置</p></div></div><div class="header-actions"><nav class="header-nav"><a href="/admin">概览</a><a href="/admin/settings">管理员设置</a></nav><span class="status-chip">配置模式</span></div></header>
     <main>
-      <section class="page-toolbar"><div><p class="eyebrow">Mailbox settings</p><h1>母邮箱与同步</h1><p class="lead">配置个人 Outlook 账号以及定时同步策略。</p></div><a class="btn btn-secondary" href="/admin">返回概览</a></section>
+      <section class="page-toolbar"><div><p class="eyebrow">Mother mailbox maintenance</p><h1>{{ '新增母邮箱' if is_new else '编辑母邮箱' }}</h1><p class="lead">编辑母邮箱身份信息，并使用原有的 Microsoft OAuth 授权流程完成连接。</p></div><a class="btn btn-secondary" href="/admin/settings">返回管理员设置</a></section>
       {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
       {% if request.query_params.get('oauth_error') %}<div class="alert" role="alert">微软授权未完成：{{ request.query_params.get('oauth_error') }}</div>{% endif %}
       {% if request.query_params.get('sync') == 'saved' %}<div class="notice" role="status">同步设置已保存。</div>{% endif %}
@@ -27,21 +27,21 @@
       <section class="glass-panel card" style="margin-bottom:16px;">
         <div class="card-heading"><div><h2>同步设置</h2><p>同步间隔和同步文件夹独立于 OAuth 授权配置保存。</p></div><span class="status-pill {% if not sync_enabled %}off{% endif %}">{{ '已启用' if sync_enabled else '已停用' }}</span></div>
         <form id="sync-settings-form" class="sync-row" method="post" action="/admin/mailbox/sync-settings">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% if mailbox %}<input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">{% endif %}
           <div class="field"><label for="sync_interval_seconds">同步间隔（秒）</label><input class="input" id="sync_interval_seconds" type="number" name="sync_interval_seconds" min="10" max="86400" value="{{ interval_seconds }}" required><p class="field-help">允许范围：10 秒至 24 小时，默认 30 秒。</p></div>
           <div class="field"><label for="folder_names">同步文件夹</label><input class="input" id="folder_names" type="text" name="folder_names" value="{{ folder_names }}" placeholder="Inbox,Junk Email,Archive"><p class="field-help">多个文件夹用英文逗号分隔。</p></div>
           <div class="sync-actions"><button class="btn btn-primary" type="submit">保存</button></div>
         </form>
-        <form method="post" action="/admin/mailbox/sync-toggle" style="margin-top:12px;"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-secondary" type="submit">{{ '停用定时同步' if sync_enabled else '启用定时同步' }}</button></form>
+        <form method="post" action="/admin/mailbox/sync-toggle" style="margin-top:12px;"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% if mailbox %}<input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">{% endif %}<button class="btn btn-secondary" type="submit">{{ '停用定时同步' if sync_enabled else '启用定时同步' }}</button></form>
       </section>
 
       <section class="glass-panel card">
         <div class="card-heading"><div><h2>授权方式</h2><p>三种方式互斥，最终都会在服务器内部保存长期 OAuth 配置。</p></div><span class="status-pill {% if not config.get('refresh_token_configured') %}off{% endif %}">{{ '已配置' if config.get('refresh_token_configured') else '未配置' }}</span></div>
         {% if fields_read_only %}<div class="notice readonly-note">当前通过 {{ '微软网页授权' if config.get('auth_method') == 'web' else 'Device Code' }} 已连接母邮箱。母邮箱地址、Client ID 和 Authority 默认只读；如需更换账号或应用，请先重新配置授权。</div>{% endif %}
-        <form id="oauthForm" class="form-stack" method="post" action="/admin/mailbox{% if request.query_params.get('edit') %}?edit=1{% endif %}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <form id="oauthForm" class="form-stack" method="post" action="/admin/mailbox{% if request.query_params.get('edit') %}?edit=1{% elif request.query_params.get('new') %}?new=1{% endif %}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% if mailbox %}<input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">{% endif %}
           <div class="form-grid">
-            <div class="field"><label for="mailbox_address">母邮箱地址</label><input class="input" id="mailbox_address" type="email" name="mailbox_address" value="{{ config.get('mailbox_address', '') }}" placeholder="mother@outlook.com" {% if fields_read_only %}readonly{% endif %} required></div>
+            <div class="field"><label for="mailbox_address">母邮箱地址</label><input class="input" id="mailbox_address" type="email" name="mailbox_address" value="{{ config.get('mailbox_address', '') }}" placeholder="mother@example.com" {% if fields_read_only %}readonly{% endif %} required></div>
             <div class="field"><label for="client_id">Microsoft Client ID</label><input class="input" id="client_id" type="text" name="client_id" value="{{ config.get('client_id', '') }}" {% if fields_read_only %}readonly{% endif %} required></div>
             <div class="field"><label for="authority">Authority</label><input class="input" id="authority" type="text" name="authority" value="{{ config.get('authority', 'consumers') }}" {% if fields_read_only %}readonly{% endif %} required><p class="field-help">个人 Outlook 通常使用 consumers。</p></div>
           </div>
@@ -64,17 +64,17 @@
 
           <div id="webPanel" class="oauth-panel">
             <div class="notice">生成 Microsoft 授权链接后，请复制链接到浏览器打开。请确认 Microsoft 应用已配置此回调地址：<code id="callbackHint">/admin/oauth/callback</code>。</div>
-            <div class="form-footer"><span class="muted">使用 PKCE 和一次性 state；授权临时状态不会把 code verifier 写入浏览器。</span><button class="btn btn-primary" type="submit" formaction="/admin/oauth/web/start{% if request.query_params.get('edit') %}?edit=1{% endif %}">生成授权链接</button></div>
+            <div class="form-footer"><span class="muted">使用 PKCE 和一次性 state；授权临时状态不会把 code verifier 写入浏览器。</span><button class="btn btn-primary" type="submit" formaction="/admin/oauth/web/start{% if request.query_params.get('edit') %}?edit=1{% elif request.query_params.get('new') %}?new=1{% endif %}">生成授权链接</button></div>
             {% if authorization_url %}<div class="field" style="margin-top:12px;"><label for="authorization_url">Microsoft 授权链接</label><textarea class="input" id="authorization_url" name="authorization_url" rows="4" readonly>{{ authorization_url }}</textarea><p class="field-help">请完整复制此链接到浏览器打开；授权完成后会回到本系统回调地址。</p></div>{% endif %}
           </div>
 
           <div id="devicePanel" class="oauth-panel" hidden>
             <div class="notice">点击后服务器会向 Microsoft 请求设备码，然后在本页生成可复制的登录链接和用户码。</div>
-            <div class="form-footer"><span class="muted">设备密钥只保存在服务器数据库的加密临时授权状态中。</span><button class="btn btn-primary" type="submit" formaction="/admin/oauth/device/start{% if request.query_params.get('edit') %}?edit=1{% endif %}">获取 Device Code</button></div>
+            <div class="form-footer"><span class="muted">设备密钥只保存在服务器数据库的加密临时授权状态中。</span><button class="btn btn-primary" type="submit" formaction="/admin/oauth/device/start{% if request.query_params.get('edit') %}?edit=1{% elif request.query_params.get('new') %}?new=1{% endif %}">获取 Device Code</button></div>
           </div>
         </form>
 
-        {% if can_edit_oauth %}<div class="form-footer" style="margin-top:16px;"><span class="muted">更换母邮箱或 Microsoft 应用会重新开始授权，不会自动删除当前配置。</span><a class="btn btn-secondary" href="/admin/mailbox?edit=1">重新配置授权</a></div>{% endif %}
+        {% if can_edit_oauth %}<div class="form-footer" style="margin-top:16px;"><span class="muted">更换母邮箱或 Microsoft 应用会重新开始授权，不会自动删除当前配置。</span><a class="btn btn-secondary" href="/admin/mailbox?{% if mailbox %}mailbox_id={{ mailbox.id }}&{% endif %}edit=1">重新配置授权</a></div>{% endif %}
 
         {% if device_authorization %}
         <div class="oauth-device-card" role="status">
@@ -82,7 +82,7 @@
           <p>{{ device_authorization.message or '请在另一台设备打开以下网址并输入用户码：' }}</p>
           <p><label for="device_verification_uri">Microsoft 设备登录链接</label><textarea class="input" id="device_verification_uri" name="device_verification_uri" rows="2" readonly>{{ device_authorization.verification_uri }}</textarea></p>
           <p class="device-code"><code>{{ device_authorization.user_code }}</code></p>
-          <form method="post" action="/admin/oauth/device/confirm"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="transaction_id" value="{{ device_authorization.transaction_id }}"><button class="btn btn-primary" type="submit">我已完成授权，确认</button></form>
+          <form method="post" action="/admin/oauth/device/confirm"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% if mailbox %}<input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">{% endif %}<input type="hidden" name="transaction_id" value="{{ device_authorization.transaction_id }}"><button class="btn btn-primary" type="submit">我已完成授权，确认</button></form>
           <p class="field-help">如果提示尚未完成，请在 Microsoft 登录完成后再次点击确认。Device Code 有效期由 Microsoft 返回。</p>
         </div>
         {% endif %}

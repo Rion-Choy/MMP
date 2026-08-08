@@ -113,9 +113,9 @@ Useful local URLs:
 - Administrator login: `http://127.0.0.1:8000/admin/login`
 - Administrator dashboard: `http://127.0.0.1:8000/admin`
 
-After signing in, open **Mother Mailboxes** (`/admin/mailboxes`) to add, authorize, enable, or disable source mailboxes. Each mailbox is isolated by internal ID for OAuth storage, Graph client caching, folder cursors, provider message IDs, and synchronization records. Disabling a mailbox preserves its archive and only excludes it from later scheduled cycles.
+After signing in, open **Administrator Settings** (`/admin/settings`) and use the **Mother Mailboxes** card to add, authorize, edit, enable, or disable source mailboxes. Each mailbox is isolated by internal ID for OAuth storage, Graph client caching, folder cursors, provider message IDs, and synchronization records. Disabling a mailbox preserves its archive and only excludes it from later scheduled cycles.
 
-The existing **Administrator Settings** page remains available at `/admin/settings` and `/admin/mailbox`. Synchronization interval, selected folders, and the global schedule toggle remain separate from mailbox OAuth identity. Legacy forms without a mailbox ID resolve to the migrated historical mailbox for compatibility.
+The **Administrator Settings** page contains the public-access controls, global synchronization controls, and the source-mailbox list. Selecting **Add Mother Mailbox** or editing an existing row opens the dedicated mailbox-maintenance page at `/admin/mailbox`. Synchronization interval, selected folders, and the global schedule toggle remain separate from mailbox OAuth identity. The legacy `GET /admin/mailboxes` page route is retained as a compatibility redirect, and legacy forms without a mailbox ID resolve to the migrated historical mailbox for compatibility.
 
 For each started cycle, enabled mailboxes are processed in stable ascending ID order. A skipped fixed trigger creates a `SyncTrigger` record but no `SyncCycle` or mailbox-level `SyncRun` records. A started cycle always finishes its mailbox snapshot; later trigger points never cancel or shorten it.
 
@@ -172,9 +172,9 @@ uv run python scripts/sync_once.py --help
 ## Administrator Workflow
 
 1. Sign in at `/admin/login`.
-2. Open `/admin/mailboxes` to add and manage mother mailboxes.
-3. Open `/admin/settings` to configure global synchronization interval, folders, and schedule settings.
-4. Authorize each mother mailbox using Web, Device Code, or manual refresh-token mode.
+2. Open `/admin/settings` and use the **Mother Mailboxes** card to add or edit a source mailbox.
+3. Authorize each mother mailbox using Web, Device Code, or manual refresh-token mode.
+4. Configure global synchronization interval, folders, and schedule settings on `/admin/settings`.
 5. Create or import private target addresses under `/admin/targets`.
 6. Share only the generated public access link for the intended target.
 7. Review synchronized messages from `/admin/messages`.
@@ -207,8 +207,8 @@ export MAIL_PORTAL_USER="mailportal"
 export MAIL_PORTAL_GROUP="mailportal"
 export MAIL_PORTAL_WEB_SERVICE="mailportal-web.service"
 export MAIL_PORTAL_SYNC_SERVICE="mailportal-sync.service"
-export MAIL_PORTAL_RUNTIME_DIR="/var/lib/mail-portal-runtime"
-export MAIL_PORTAL_CADDYFILE="/etc/caddy/Caddyfile"
+export MAIL_PORTAL_RUNTIME_DIR="/path/to/mail-portal-runtime"
+export MAIL_PORTAL_CADDYFILE="/path/to/caddy/Caddyfile"
 export MAIL_PORTAL_OAUTH_REDIRECT_URI="$MAIL_PORTAL_PUBLIC_URL/admin/oauth/callback"
 ```
 

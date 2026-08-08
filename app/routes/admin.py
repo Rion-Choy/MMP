@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from uuid import uuid4
 
@@ -476,22 +477,47 @@ def delete_target_route(request: Request, target_id: int, csrf_token: str = Form
 
 
 @router.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+def settings_page(request: Request) -> Response:
+    sync = _sync_context(request)
+    token = csrf_context(request)["csrf_token"]
+    context = {
+        **sync,
+        "mailboxes": _mailbox_records(request),
+        "error": request.query_params.get("error"),
+        "csrf_token": token,
+    }
+    response = templates.TemplateResponse(request, "admin/settings.html", context)
+    return set_csrf_cookie(request, no_store(response), token)
+
+
 @router.get("/mailbox", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
-def mailbox_page(request: Request, edit: int = Query(default=0), mailbox_id: int | None = Query(default=None)) -> Response:
+def mailbox_page(
+    request: Request,
+    edit: int = Query(default=0),
+    new: int = Query(default=0),
+    mailbox_id: int | None = Query(default=None),
+) -> Response:
     db = request.app.state.session_factory()
     try:
-        mailbox = db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db)
+        create_new = bool(new and mailbox_id is None)
+        mailbox = None if create_new else (db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db))
+        if mailbox_id is not None and mailbox is None:
+            raise HTTPException(status_code=404, detail="mailbox not found")
         if mailbox is None:
             mailbox = None
     finally:
         db.close()
-    path = _oauth_path_for_mailbox(request, mailbox.id if mailbox else None)
-    if path.exists():
+    path = None if (new and mailbox is None) else _oauth_path_for_mailbox(request, mailbox.id if mailbox else None)
+    if path is not None and path.exists():
         config = load_oauth_config(path)
         config["refresh_token_configured"] = bool(config.get("refresh_token"))
         config.pop("refresh_token", None)
     else:
         config = {"authority": "consumers", "auth_method": "manual", "refresh_token_configured": False}
+    if mailbox is not None:
+        config.setdefault("mailbox_address", mailbox.email_address)
+        config.setdefault("client_id", mailbox.client_id)
+        config.setdefault("authority", mailbox.authority)
     sync = _sync_context(request)
     token = csrf_context(request)["csrf_token"]
     connected = bool(config.get("refresh_token_configured"))
@@ -502,6 +528,7 @@ def mailbox_page(request: Request, edit: int = Query(default=0), mailbox_id: int
         **sync,
         "mailbox": mailbox,
         "mailboxes": _mailbox_records(request),
+        "is_new": bool(new) and mailbox is None,
         "fields_read_only": fields_read_only,
         "can_edit_oauth": fields_read_only,
         "error": request.query_params.get("error"),
@@ -509,19 +536,14 @@ def mailbox_page(request: Request, edit: int = Query(default=0), mailbox_id: int
         "authorization_url": None,
         "device_authorization": None,
     }
-    response = templates.TemplateResponse(request, "admin/settings.html", context)
+    response = templates.TemplateResponse(request, "admin/mother_mailbox.html", context)
     return set_csrf_cookie(request, no_store(response), token)
 
 
 @router.get("/mailboxes", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 def mailboxes_page(request: Request) -> Response:
-    token = csrf_context(request)["csrf_token"]
-    response = templates.TemplateResponse(
-        request,
-        "admin/mailboxes.html",
-        {"mailboxes": _mailbox_records(request), "csrf_token": token},
-    )
-    return set_csrf_cookie(request, no_store(response), token)
+    query = urlencode({key: request.query_params[key] for key in ("error",) if request.query_params.get(key)})
+    return no_store(RedirectResponse(f"/admin/settings{'?' + query if query else ''}", status_code=303))
 
 
 @router.post("/mailboxes", dependencies=[Depends(require_admin)])
@@ -650,20 +672,20 @@ def save_mailbox(
     oauth_mode: str = Form("manual"),
     csrf_token: str = Form(...),
     edit: int = Query(default=0),
+    new: int = Query(default=0),
     mailbox_id: int | None = Form(default=None),
 ) -> Response:
     validate_csrf(request, csrf_token)
     db = request.app.state.session_factory()
     try:
-        mailbox = db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db)
-        if mailbox is None:
-            mailbox = None
-    finally:
-        db.close()
-    try:
+        create_new = bool(new and mailbox_id is None)
+        mailbox = None if create_new else (db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db))
+        if mailbox_id is not None and mailbox is None:
+            raise HTTPException(status_code=404, detail="mailbox not found")
         normalized = normalize_email_address(mailbox_address)
-        path = _oauth_path_for_mailbox(request, mailbox.id if mailbox else None)
-        existing = load_oauth_config(path) if path.exists() else {}
+        legacy_compat = mailbox_id is None and not new
+        path = None if create_new else _oauth_path_for_mailbox(request, mailbox.id if mailbox else None)
+        existing = load_oauth_config(path) if path is not None and path.exists() else {}
         candidate_identity = {
             "mailbox_address": normalized,
             "client_id": client_id.strip(),
@@ -691,10 +713,47 @@ def save_mailbox(
         if not candidate["refresh_token"]:
             raise ValueError("必须提供 refresh token")
         validate_oauth_config(candidate)
+        duplicate_query = select(MotherMailbox).where(MotherMailbox.normalized_email == normalized)
+        if mailbox is not None:
+            duplicate_query = duplicate_query.where(MotherMailbox.id != mailbox.id)
+        if db.scalar(duplicate_query) is not None:
+            raise ValueError("该母邮箱已经存在")
+        if mailbox is None:
+            mailbox = MotherMailbox(
+                email_address=normalized,
+                normalized_email=normalized,
+                client_id=candidate["client_id"],
+                authority=candidate["authority"],
+                auth_method="manual",
+                enabled=True,
+            )
+            db.add(mailbox)
+            db.flush()
+        else:
+            mailbox.email_address = normalized
+            mailbox.normalized_email = normalized
+            mailbox.client_id = candidate["client_id"]
+            mailbox.authority = candidate["authority"]
+            mailbox.auth_method = "manual"
+            mailbox.enabled = True
+        path = _oauth_path_for_mailbox(request, mailbox.id)
         save_oauth_config(path, candidate)
-    except (OAuthError, ValueError, OSError) as exc:
-        return no_store(RedirectResponse(f"/admin/mailbox?error={str(exc)}", status_code=303))
-    return no_store(RedirectResponse("/admin/mailbox", status_code=303))
+        if legacy_compat:
+            save_oauth_config(request.app.state.microsoft_oauth_path, candidate)
+        db.commit()
+        return no_store(RedirectResponse(f"/admin/mailbox?mailbox_id={mailbox.id}", status_code=303))
+    except (OAuthError, ValueError, OSError, IntegrityError) as exc:
+        db.rollback()
+        params = {"error": str(exc)}
+        if new:
+            params["new"] = "1"
+        elif mailbox_id is not None:
+            params["mailbox_id"] = str(mailbox_id)
+            if edit:
+                params["edit"] = "1"
+        return no_store(RedirectResponse(f"/admin/mailbox?{urlencode(params)}", status_code=303))
+    finally:
+        db.close()
 
 
 def _oauth_redirect_uri(request: Request) -> str:
@@ -707,10 +766,17 @@ def _oauth_secret(request: Request) -> str:
     return str(instance["cookie_secret"])
 
 
-def _ensure_mailbox_identity(request: Request, mailbox_id: int | None, identity: dict[str, str], *, enabled: bool | None = None) -> MotherMailbox:
+def _ensure_mailbox_identity(
+    request: Request,
+    mailbox_id: int | None,
+    identity: dict[str, str],
+    *,
+    enabled: bool | None = None,
+    create_new: bool = False,
+) -> MotherMailbox:
     db = request.app.state.session_factory()
     try:
-        mailbox = db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db)
+        mailbox = None if create_new else (db.get(MotherMailbox, mailbox_id) if mailbox_id is not None else _legacy_mailbox(request, db))
         if mailbox is None:
             mailbox = None
         if mailbox is None:
@@ -723,6 +789,7 @@ def _ensure_mailbox_identity(request: Request, mailbox_id: int | None, identity:
                 enabled=bool(enabled),
             )
             db.add(mailbox)
+            db.flush()
         else:
             mailbox.email_address = identity["mailbox_address"]
             mailbox.normalized_email = identity["mailbox_address"]
@@ -730,6 +797,12 @@ def _ensure_mailbox_identity(request: Request, mailbox_id: int | None, identity:
             mailbox.authority = identity["authority"]
             if enabled is not None:
                 mailbox.enabled = enabled
+        duplicate_query = select(MotherMailbox).where(
+            MotherMailbox.normalized_email == identity["mailbox_address"]
+        )
+        duplicate_query = duplicate_query.where(MotherMailbox.id != mailbox.id)
+        if db.scalar(duplicate_query) is not None:
+            raise ValueError("该母邮箱已经存在")
         db.commit()
         db.refresh(mailbox)
         return mailbox
@@ -766,7 +839,10 @@ def _validate_new_oauth_identity(
     *,
     edit: bool = False,
     mailbox_id: int | None = None,
+    new: bool = False,
 ) -> None:
+    if new:
+        return
     existing, auth_method, connected = _existing_oauth_identity(request, mailbox_id)
     if connected and auth_method in {"web", "device"} and not edit:
         raise ValueError("当前通过授权流程已连接，母邮箱信息和授权方式为只读；请先点击“重新配置授权”")
@@ -785,13 +861,15 @@ def _mailbox_error_page(
     error: str,
     csrf_token: str,
     mailbox: MotherMailbox | None = None,
+    template_name: str = "admin/mother_mailbox.html",
+    is_new: bool = False,
 ) -> Response:
     return set_csrf_cookie(
         request,
         no_store(
             templates.TemplateResponse(
                 request,
-                "admin/settings.html",
+                template_name,
                 {
                     "config": config,
                     "interval_seconds": interval_seconds,
@@ -804,6 +882,8 @@ def _mailbox_error_page(
                     "csrf_token": csrf_token,
                     "device_authorization": None,
                     "mailbox": mailbox,
+                    "mailboxes": _mailbox_records(request),
+                    "is_new": is_new,
                 },
                 status_code=400,
             )
@@ -858,15 +938,17 @@ def oauth_web_start(
     authority: str = Form("consumers"),
     csrf_token: str = Form(...),
     edit: int = Query(default=0),
+    new: int = Query(default=0),
     mailbox_id: int | None = Form(default=None),
 ) -> Response:
     validate_csrf(request, csrf_token)
     mailbox = None
+    create_new = bool(new and mailbox_id is None)
     try:
         candidate = _mailbox_candidate(mailbox_address, client_id, authority)
-        legacy_compat = mailbox_id is None
-        _validate_new_oauth_identity(request, candidate, edit=bool(edit), mailbox_id=mailbox_id)
-        mailbox = _ensure_mailbox_identity(request, mailbox_id, candidate, enabled=False)
+        legacy_compat = mailbox_id is None and not new
+        _validate_new_oauth_identity(request, candidate, edit=bool(edit), mailbox_id=mailbox_id, new=create_new)
+        mailbox = _ensure_mailbox_identity(request, mailbox_id, candidate, enabled=False, create_new=create_new)
         mailbox_id = mailbox.id
         verifier, challenge = generate_pkce_pair()
         state = uuid4().hex + uuid4().hex
@@ -897,7 +979,7 @@ def oauth_web_start(
         )
         response = templates.TemplateResponse(
             request,
-            "admin/settings.html",
+            "admin/mother_mailbox.html",
             {
                 "config": {**candidate, "auth_method": "web", "refresh_token_configured": False},
                 **_sync_context(request),
@@ -909,6 +991,7 @@ def oauth_web_start(
                 "device_authorization": None,
                 "mailbox": mailbox,
                 "mailboxes": _mailbox_records(request),
+                "is_new": False,
             },
         )
         response.set_cookie(
@@ -932,6 +1015,7 @@ def oauth_web_start(
             error=str(exc),
             csrf_token=csrf_token,
             mailbox=mailbox,
+            is_new=create_new,
         )
 
 
@@ -970,7 +1054,10 @@ def oauth_callback(request: Request, code: str = "", state: str = "", error: str
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         db.close()
-    response = RedirectResponse("/admin/mailbox", status_code=303)
+    location = "/admin/mailbox"
+    if payload.get("mother_mailbox_id") is not None and not payload.get("legacy_compat"):
+        location = f"/admin/mailbox?mailbox_id={payload['mother_mailbox_id']}"
+    response = RedirectResponse(location, status_code=303)
     response.delete_cookie(OAUTH_STATE_COOKIE)
     return no_store(response)
 
@@ -983,15 +1070,17 @@ def oauth_device_start(
     authority: str = Form("consumers"),
     csrf_token: str = Form(...),
     edit: int = Query(default=0),
+    new: int = Query(default=0),
     mailbox_id: int | None = Form(default=None),
 ) -> Response:
     validate_csrf(request, csrf_token)
     mailbox = None
+    create_new = bool(new and mailbox_id is None)
     try:
         candidate = _mailbox_candidate(mailbox_address, client_id, authority)
-        legacy_compat = mailbox_id is None
-        _validate_new_oauth_identity(request, candidate, edit=bool(edit), mailbox_id=mailbox_id)
-        mailbox = _ensure_mailbox_identity(request, mailbox_id, candidate, enabled=False)
+        legacy_compat = mailbox_id is None and not new
+        _validate_new_oauth_identity(request, candidate, edit=bool(edit), mailbox_id=mailbox_id, new=create_new)
+        mailbox = _ensure_mailbox_identity(request, mailbox_id, candidate, enabled=False, create_new=create_new)
         mailbox_id = mailbox.id
         device = request_device_code(client_id=candidate["client_id"], authority=candidate["authority"])
         db = request.app.state.session_factory()
@@ -1019,7 +1108,7 @@ def oauth_device_start(
         sync = _sync_context(request)
         response = templates.TemplateResponse(
             request,
-            "admin/settings.html",
+            "admin/mother_mailbox.html",
             {
                 "config": {**candidate, "auth_method": "device", "refresh_token_configured": False},
                 **sync,
@@ -1036,6 +1125,7 @@ def oauth_device_start(
                 },
                 "mailbox": mailbox,
                 "mailboxes": _mailbox_records(request),
+                "is_new": False,
             },
         )
         return set_csrf_cookie(request, no_store(response), token)
@@ -1051,6 +1141,7 @@ def oauth_device_start(
             error=str(exc),
             csrf_token=csrf_token,
             mailbox=mailbox,
+            is_new=create_new,
         )
 
 
@@ -1091,7 +1182,7 @@ def oauth_device_confirm(request: Request, transaction_id: str = Form(...), csrf
                     lookup.close()
             response = templates.TemplateResponse(
                 request,
-                "admin/settings.html",
+                "admin/mother_mailbox.html",
                 {
                     "config": {**payload, "auth_method": "device", "refresh_token_configured": False},
                     **sync,
@@ -1109,6 +1200,7 @@ def oauth_device_confirm(request: Request, transaction_id: str = Form(...), csrf
                     },
                     "mailbox": mailbox,
                     "mailboxes": _mailbox_records(request),
+                    "is_new": False,
                 },
                 status_code=409,
             )
@@ -1118,4 +1210,8 @@ def oauth_device_confirm(request: Request, transaction_id: str = Form(...), csrf
         raise
     finally:
         db.close()
-    return no_store(RedirectResponse("/admin/mailbox", status_code=303))
+    location = "/admin/mailbox"
+    mailbox_id = payload.get("mother_mailbox_id")
+    if mailbox_id is not None and not payload.get("legacy_compat"):
+        location = f"/admin/mailbox?mailbox_id={mailbox_id}"
+    return no_store(RedirectResponse(location, status_code=303))

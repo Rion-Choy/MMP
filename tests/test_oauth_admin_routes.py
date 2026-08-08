@@ -8,7 +8,7 @@ from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.models import OAuthTransaction
+from app.models import MotherMailbox, OAuthTransaction
 from app.services.instance_secrets import load_instance_secrets
 from app.services.microsoft_oauth import DeviceAuthorizationPending, save_oauth_config, validate_access_token_for_mailbox
 
@@ -41,7 +41,7 @@ def _csrf(client: TestClient) -> str:
 def _common_form(csrf: str) -> dict[str, str]:
     return {
         "csrf_token": csrf,
-        "mailbox_address": "mother@outlook.com",
+        "mailbox_address": "mother@example.com",
         "client_id": "client-id",
         "authority": "consumers",
     }
@@ -53,15 +53,15 @@ def test_access_token_validation_confirms_the_microsoft_account() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/v1.0/me")
         assert request.headers["authorization"] == "Bearer access-token"
-        return httpx.Response(200, json={"mail": "mother@outlook.com"})
+        return httpx.Response(200, json={"mail": "mother@example.com"})
 
     result = validate_access_token_for_mailbox(
         access_token="access-token",
-        mailbox_address="Mother@outlook.com",
+        mailbox_address="Mother@example.com",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    assert result == {"mailbox_address": "mother@outlook.com", "account_address": "mother@outlook.com"}
+    assert result == {"mailbox_address": "mother@example.com", "account_address": "mother@example.com"}
 
 
 def test_web_oauth_callback_saves_internal_refresh_config_and_consumes_transaction(client: TestClient, monkeypatch) -> None:
@@ -92,8 +92,8 @@ def test_web_oauth_callback_saves_internal_refresh_config_and_consumes_transacti
     monkeypatch.setattr(
         "app.routes.admin.validate_access_token_for_mailbox",
         lambda **kwargs: {
-            "mailbox_address": "mother@outlook.com",
-            "account_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
+            "account_address": "mother@example.com",
         },
     )
 
@@ -105,7 +105,7 @@ def test_web_oauth_callback_saves_internal_refresh_config_and_consumes_transacti
     assert callback.headers["location"] == "/admin/mailbox"
 
     config = json.loads(client.app.state.microsoft_oauth_path.read_text(encoding="utf-8"))
-    assert config["mailbox_address"] == "mother@outlook.com"
+    assert config["mailbox_address"] == "mother@example.com"
     assert config["refresh_token"] == "web-refresh-token"
     assert config["auth_method"] == "web"
 
@@ -278,8 +278,8 @@ def test_device_code_confirmation_saves_config_after_authorization(client: TestC
     monkeypatch.setattr(
         "app.routes.admin.validate_access_token_for_mailbox",
         lambda **kwargs: {
-            "mailbox_address": "mother@outlook.com",
-            "account_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
+            "account_address": "mother@example.com",
         },
     )
     confirm = client.post(
@@ -330,7 +330,7 @@ def test_connected_web_page_hides_authorization_choices_until_reconfigured(clien
     save_oauth_config(
         client.app.state.microsoft_oauth_path,
         {
-            "mailbox_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
             "client_id": "client-id",
             "authority": "consumers",
             "refresh_token": "refresh-token",
@@ -372,8 +372,246 @@ def test_admin_settings_page_separates_captcha_sync_and_oauth_cards(client: Test
     assert "验证码设置" in page.text
     assert 'action="/admin/mailbox/captcha-toggle"' in page.text
     assert 'id="sync-settings-form"' in page.text
-    assert 'id="oauthForm"' in page.text
+    assert "维护母邮箱" in page.text
+    assert 'id="oauthForm"' not in page.text
     assert page.text.count("settings-card") >= 3
+
+
+def test_dashboard_header_does_not_expose_mother_mailbox_maintenance_link(client: TestClient) -> None:
+    _login(client)
+
+    page = client.get("/admin")
+
+    assert page.status_code == 200
+    assert '<a href="/admin/mailboxes">母邮箱</a>' not in page.text
+
+
+def test_admin_settings_shows_mother_mailbox_list_with_add_and_edit_entries(client: TestClient) -> None:
+    _login(client)
+    db = client.app.state.session_factory()
+    mailbox = MotherMailbox(
+        email_address="mother@example.com",
+        normalized_email="mother@example.com",
+        client_id="client-id",
+        authority="consumers",
+        auth_method="manual",
+        enabled=True,
+    )
+    db.add(mailbox)
+    db.commit()
+    db.refresh(mailbox)
+    mailbox_id = mailbox.id
+    db.close()
+
+    page = client.get("/admin/settings")
+
+    assert page.status_code == 200
+    assert "维护母邮箱" in page.text
+    assert 'href="/admin/mailbox?new=1"' in page.text
+    assert "mother@example.com" in page.text
+    assert f'href="/admin/mailbox?mailbox_id={mailbox_id}&edit=1"' in page.text
+    assert 'id="oauthForm"' not in page.text
+
+
+def test_unknown_mother_mailbox_id_does_not_fall_back_to_legacy_configuration(client: TestClient) -> None:
+    _login(client)
+    save_oauth_config(
+        client.app.state.microsoft_oauth_path,
+        {
+            "mailbox_address": "legacy@example.com",
+            "client_id": "legacy-client",
+            "authority": "consumers",
+            "refresh_token": "legacy-refresh-token",
+            "auth_method": "manual",
+        },
+    )
+
+    page = client.get("/admin/mailbox?mailbox_id=999&edit=1")
+
+    assert page.status_code == 404
+
+
+def test_new_mother_mailbox_enters_the_existing_maintenance_form(client: TestClient) -> None:
+    _login(client)
+
+    page = client.get("/admin/mailbox?new=1")
+
+    assert page.status_code == 200
+    assert "新增母邮箱" in page.text
+    assert 'id="oauthForm"' in page.text
+    assert 'action="/admin/mailbox?new=1"' in page.text
+    assert 'id="mailbox_address"' in page.text
+
+
+def test_new_mother_mailbox_manual_authorization_persists_identity_and_id_scoped_config(
+    client: TestClient, monkeypatch
+) -> None:
+    _login(client)
+    monkeypatch.setattr(
+        "app.routes.admin.validate_oauth_config",
+        lambda config: {
+            "mailbox_address": config["mailbox_address"],
+            "account_address": config["mailbox_address"],
+        },
+    )
+
+    form = _common_form(_csrf(client))
+    form.update(
+        {
+            "mailbox_address": "new-mother@example.com",
+            "client_id": "new-client",
+            "authority": "consumers",
+            "oauth_mode": "manual",
+            "refresh_token": "new-refresh-token",
+        }
+    )
+    response = client.post("/admin/mailbox?new=1", data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "mailbox_id=" in response.headers["location"]
+    mailbox_id = int(response.headers["location"].split("mailbox_id=", 1)[1])
+
+    db = client.app.state.session_factory()
+    try:
+        mailbox = db.get(MotherMailbox, mailbox_id)
+        assert mailbox is not None
+        assert mailbox.email_address == "new-mother@example.com"
+        assert mailbox.client_id == "new-client"
+        assert mailbox.enabled is True
+    finally:
+        db.close()
+
+    from app.config import oauth_config_path
+
+    config = json.loads(oauth_config_path(mailbox_id).read_text(encoding="utf-8"))
+    assert config["refresh_token"] == "new-refresh-token"
+    assert config["auth_method"] == "manual"
+
+
+def test_new_mother_mailbox_web_authorization_uses_new_mailbox_flow_without_legacy_file(
+    client: TestClient, monkeypatch
+) -> None:
+    _login(client)
+    monkeypatch.setattr(
+        "app.routes.admin.build_authorization_url",
+        lambda **kwargs: "https://login.example/authorize?state=" + kwargs["state"],
+    )
+
+    form = _common_form(_csrf(client))
+    form.update(
+        {
+            "mailbox_address": "web-new@example.com",
+            "client_id": "web-client",
+            "authority": "consumers",
+        }
+    )
+    response = client.post("/admin/oauth/web/start?new=1", data=form, follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "https://login.example/authorize?state=" in response.text
+    assert "web-new@example.com" in response.text
+
+    db = client.app.state.session_factory()
+    try:
+        mailbox = db.scalar(select(MotherMailbox).where(MotherMailbox.normalized_email == "web-new@example.com"))
+        assert mailbox is not None
+        assert mailbox.enabled is False
+    finally:
+        db.close()
+    assert not client.app.state.microsoft_oauth_path.exists()
+
+
+def test_legacy_oauth_start_can_reuse_the_migrated_first_mailbox_without_duplicate_error(
+    client: TestClient, monkeypatch
+) -> None:
+    _login(client)
+    db = client.app.state.session_factory()
+    db.add(
+        MotherMailbox(
+            email_address="mother@example.com",
+            normalized_email="mother@example.com",
+            client_id="client-id",
+            authority="consumers",
+            auth_method="manual",
+            enabled=False,
+        )
+    )
+    db.commit()
+    db.close()
+    monkeypatch.setattr(
+        "app.routes.admin.build_authorization_url",
+        lambda **kwargs: "https://login.example/authorize?state=" + kwargs["state"],
+    )
+
+    response = client.post("/admin/oauth/web/start", data=_common_form(_csrf(client)))
+
+    assert response.status_code == 200
+    assert "https://login.example/authorize?state=" in response.text
+
+
+def test_edit_mother_mailbox_updates_identity_from_the_maintenance_form(
+    client: TestClient, monkeypatch
+) -> None:
+    _login(client)
+    db = client.app.state.session_factory()
+    mailbox = MotherMailbox(
+        email_address="old-mother@example.com",
+        normalized_email="old-mother@example.com",
+        client_id="old-client",
+        authority="consumers",
+        auth_method="manual",
+        enabled=True,
+    )
+    db.add(mailbox)
+    db.commit()
+    db.refresh(mailbox)
+    mailbox_id = mailbox.id
+    db.close()
+
+    from app.config import oauth_config_path
+    from app.services.microsoft_oauth import save_oauth_config
+
+    save_oauth_config(
+        oauth_config_path(mailbox_id),
+        {
+            "mailbox_address": "old-mother@example.com",
+            "client_id": "old-client",
+            "authority": "consumers",
+            "refresh_token": "old-refresh-token",
+            "auth_method": "manual",
+        },
+    )
+    monkeypatch.setattr(
+        "app.routes.admin.validate_oauth_config",
+        lambda config: {
+            "mailbox_address": config["mailbox_address"],
+            "account_address": config["mailbox_address"],
+        },
+    )
+
+    form = _common_form(_csrf(client))
+    form.update(
+        {
+            "mailbox_id": str(mailbox_id),
+            "mailbox_address": "edited-mother@example.com",
+            "client_id": "edited-client",
+            "authority": "consumers",
+            "oauth_mode": "manual",
+            "refresh_token": "edited-refresh-token",
+        }
+    )
+    response = client.post("/admin/mailbox?edit=1", data=form, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/admin/mailbox?mailbox_id={mailbox_id}"
+    db = client.app.state.session_factory()
+    try:
+        mailbox = db.get(MotherMailbox, mailbox_id)
+        assert mailbox is not None
+        assert mailbox.email_address == "edited-mother@example.com"
+        assert mailbox.client_id == "edited-client"
+    finally:
+        db.close()
 
 
 def test_admin_can_toggle_public_captcha_from_settings_page(client: TestClient) -> None:
@@ -402,7 +640,7 @@ def test_web_authorization_keeps_connected_mailbox_fields_read_only_until_reconf
     save_oauth_config(
         client.app.state.microsoft_oauth_path,
         {
-            "mailbox_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
             "client_id": "client-id",
             "authority": "consumers",
             "refresh_token": "refresh-token",
@@ -427,7 +665,7 @@ def test_manual_authorization_keeps_mailbox_fields_editable(client: TestClient) 
     save_oauth_config(
         client.app.state.microsoft_oauth_path,
         {
-            "mailbox_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
             "client_id": "client-id",
             "authority": "consumers",
             "refresh_token": "refresh-token",
@@ -446,7 +684,7 @@ def test_web_authorization_rejects_changed_identity_without_reconfigure(client: 
     save_oauth_config(
         client.app.state.microsoft_oauth_path,
         {
-            "mailbox_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
             "client_id": "client-id",
             "authority": "consumers",
             "refresh_token": "refresh-token",
@@ -460,7 +698,7 @@ def test_web_authorization_rejects_changed_identity_without_reconfigure(client: 
 
     form = _common_form(_csrf(client))
     form.update({"sync_interval_seconds": "600", "folder_names": "Inbox,Junk Email"})
-    form["mailbox_address"] = "other@outlook.com"
+    form["mailbox_address"] = "other@example.com"
     response = client.post("/admin/oauth/web/start", data=form, follow_redirects=False)
 
     assert response.status_code == 400
@@ -472,7 +710,7 @@ def test_web_authorization_allows_changed_identity_after_reconfigure(client: Tes
     save_oauth_config(
         client.app.state.microsoft_oauth_path,
         {
-            "mailbox_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
             "client_id": "client-id",
             "authority": "consumers",
             "refresh_token": "refresh-token",
@@ -486,7 +724,7 @@ def test_web_authorization_allows_changed_identity_after_reconfigure(client: Tes
 
     form = _common_form(_csrf(client))
     form.update({"sync_interval_seconds": "600", "folder_names": "Inbox,Junk Email"})
-    form["mailbox_address"] = "other@outlook.com"
+    form["mailbox_address"] = "other@example.com"
     response = client.post("/admin/oauth/web/start?edit=1", data=form, follow_redirects=False)
 
     assert response.status_code == 200
@@ -498,7 +736,7 @@ def test_manual_authorization_rejects_changed_identity_without_reconfigure(clien
     save_oauth_config(
         client.app.state.microsoft_oauth_path,
         {
-            "mailbox_address": "mother@outlook.com",
+            "mailbox_address": "mother@example.com",
             "client_id": "client-id",
             "authority": "consumers",
             "refresh_token": "refresh-token",
@@ -510,7 +748,7 @@ def test_manual_authorization_rejects_changed_identity_without_reconfigure(clien
         lambda config: {"mailbox_address": config["mailbox_address"], "account_address": config["mailbox_address"]},
     )
     form = _common_form(_csrf(client))
-    form["mailbox_address"] = "other@outlook.com"
+    form["mailbox_address"] = "other@example.com"
     form["refresh_token"] = "new-refresh-token"
 
     response = client.post("/admin/mailbox", data=form, follow_redirects=False)
